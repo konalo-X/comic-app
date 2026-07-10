@@ -1,0 +1,31 @@
+node_modules/
+dist/
+release/
+.DS_Store
+*.log
+.vite/
+
+# 临时脚本与调试文件
+analyze_db.js
+check_*.js
+clean_*.js
+clear_*.js
+delete_*.sh
+diagnose_*.js
+fetch_*.js
+fix_*.js
+repair_*.js
+electron/_test_match*.js
+electron/db.js.sqljs_backup
+electron/main.js.bak.*
+
+# 数据库文件
+*.db
+*.sqlite-shm
+*.sqlite-wal
+# 本地数据库（含漫画本地绝对路径，禁止入库）
+comics.sqlite
+*.sqlite
+# 私人导出图片（微信 mmexport 等）
+mmexport*.JPG
+mmexport*.jpg
