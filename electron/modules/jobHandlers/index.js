@@ -86,6 +86,26 @@ function initJobQueue() {
         }, 5 * 60 * 1000)
       }
     }
+    // 方案2：autoEnrich 单批(50本)跑完后，若仍有缺字段漫画，自动续排下一轮，
+    // 滚动补齐直到全部完成；若已全部补全则不再续排，避免死循环。
+    if (data.type === 'autoEnrich' && data.result && !data.result.cancelled) {
+      (async () => {
+        try {
+          const remaining = await db.getComicsWithMissingFields(1)
+          if (remaining && remaining.length > 0) {
+            const jq = getJobQueue()
+            if (jq) {
+              jq.add('autoEnrich', {}, { priority: 2, maxRetries: 2, delay: 60 * 1000, timeout: 10 * 60 * 1000 })
+              console.log('[AutoEnrich] 本批补全完成，仍有缺字段漫画，60s 后自动续补下一批')
+            }
+          } else {
+            console.log('[AutoEnrich] 所有漫画字段已补全，停止续排')
+          }
+        } catch (e) {
+          console.warn('[AutoEnrich] 续排检查失败:', e.message)
+        }
+      })()
+    }
   })
   jobQueue.on('failed', (data) => notifyQueueChanged('failed', data))
   jobQueue.on('paused', (data) => notifyQueueChanged('paused', data))

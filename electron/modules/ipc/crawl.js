@@ -187,7 +187,7 @@ function register(deps) {
       if (existing) {
         return { success: true, jobId: existing.id, status: 'already_running', message: '已有补全任务在执行中' }
       }
-      const jobId = jq.add('autoEnrich', {}, { priority: 2, maxRetries: 2 })
+      const jobId = jq.add('autoEnrich', {}, { priority: 2, maxRetries: 2, timeout: 10 * 60 * 1000 })
       return { success: true, jobId, status: jobId ? 'queued' : 'skipped' }
     } catch (e) {
       console.error('[detail:autoEnrichAll] error:', e.message)

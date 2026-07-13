@@ -5,7 +5,12 @@ const db = require('../../db')
 const { deriveCategoryFromTags, enrichChapters } = require('./helpers')
 
 async function jobHandlerAutoEnrich(job, onProgress) {
-  const comics = await db.getComicsWithMissingFields()
+  // 方案2：单次只补有限批次（约20本），确保在默认5分钟超时内稳跑完（真实网络下每本约8-10s含SmartCrawl等待，
+  // 20本/3批 约50-70s，即使网络慢3倍也远在300s内），避免“一次性补全部→超时被杀→永远补不完”的死循环。
+  // 每次只取当前仍缺字段的漫画（getComicsWithMissingFields 已按缺字段过滤），
+  // 补完一本就从结果集消失，下一轮接着补，直到全部补全。
+  const AUTO_ENRICH_BATCH = 20
+  const comics = await db.getComicsWithMissingFields(AUTO_ENRICH_BATCH)
   const total = comics.length
   if (total === 0) return { enrichedCount: 0, totalCount: 0, msg: '所有漫画字段已完整' }
 
