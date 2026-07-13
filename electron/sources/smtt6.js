@@ -1,8 +1,13 @@
 'use strict'
 const { URL } = require('url')
+const https = require('https')
+const http = require('http')
+const zlib = require('zlib')
 const cheerio = require('cheerio')
 const ComicSource = require('./base')
 const { net } = require('electron')
+const { sleep, randomChoice, randomUA } = require('../utils')
+const { getCookies, updateCookies } = require('../utils/cookieJar')
 
 // 将 "2024-01-15" / "2024年01月15日" / "01月15日" / "2024/01/15" 等格式转换为时间戳
 function parseDateToTimestamp(dateStr) {
@@ -61,23 +66,10 @@ const CRAWL_CONFIG = {
 
 let currentAdaptiveDelay = CRAWL_CONFIG.baseDelay
 
-// ========== User-Agent 池 ==========
-const UA_POOL = [
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0',
-]
-
+// ========== 请求指纹 ==========
 const PLATFORMS = ['"macOS"', '"Windows"', '"Linux"']
 
-function randomChoice(arr) { return arr[Math.floor(Math.random() * arr.length)] }
-function randomUA() { return randomChoice(UA_POOL) }
 function randomPlatform() { return randomChoice(PLATFORMS) }
-function delay(ms) { return new Promise(r => setTimeout(r, ms)) }
 
 function generateRequestFingerprint() {
   const chromeVersion = 120 + Math.floor(Math.random() * 15)
@@ -87,27 +79,6 @@ function generateRequestFingerprint() {
     secChUa: `"Google Chrome";v="${chromeVersion}", "Chromium";v="${chromeVersion}", "Not_A Brand";v="24"`,
     acceptLanguage: Math.random() > 0.3 ? 'zh-CN,zh;q=0.9,en;q=0.8' : 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
   }
-}
-
-// ========== Cookie 管理 ==========
-const cookieJar = new Map()
-function getCookies(hostname) {
-  const cookies = cookieJar.get(hostname) || []
-  return cookies.map(c => c.split(';')[0]).join('; ')
-}
-function updateCookies(hostname, setCookieStr) {
-  if (!setCookieStr) return
-  const headers = Array.isArray(setCookieStr) ? setCookieStr : [setCookieStr]
-  const existing = cookieJar.get(hostname) || []
-  for (const h of headers) {
-    const cookie = h.split(';')[0].trim()
-    if (!cookie) continue
-    const [name] = cookie.split('=')
-    const idx = existing.findIndex(c => c.startsWith(name + '='))
-    if (idx >= 0) existing[idx] = cookie
-    else existing.push(cookie)
-  }
-  cookieJar.set(hostname, existing)
 }
 
 // ========== 自适应延迟 ==========
@@ -150,7 +121,7 @@ class RequestQueue {
     } finally {
       this.running--
       const waitTime = calculateWaitTime()
-      await delay(waitTime)
+      await sleep(waitTime)
       this._process()
     }
   }
@@ -180,7 +151,7 @@ function _fetchWithElectronNet(urlStr, referer, fingerprint) {
       'Sec-Ch-Ua-Platform': fp.platform,
       'Sec-Fetch-Dest': 'document',
       'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': referer ? 'same-origin' : 'none',
+      'Sec-Fetch-Site': referer ? 'cross-site' : 'none',
       'Sec-Fetch-User': '?1',
       'Upgrade-Insecure-Requests': '1',
     }
@@ -274,7 +245,7 @@ class Smtt6Source extends ComicSource {
           if (i > 0 || requestQueue.running > 0) {
             const waitTime = calculateWaitTime()
             console.log(`[SmartCrawl] 等待 ${(waitTime / 1000).toFixed(1)}s 后请求...`)
-            await delay(waitTime)
+            await sleep(waitTime)
           }
 
           const result = await _fetchWithElectronNet(url, referer, fingerprint)
@@ -298,7 +269,7 @@ class Smtt6Source extends ComicSource {
             backoffMs = (i + 1) * 2000 + Math.random() * 2000
           }
 
-          await delay(backoffMs)
+          await sleep(backoffMs)
           fingerprint = generateRequestFingerprint()
         }
       }
@@ -449,11 +420,17 @@ class Smtt6Source extends ComicSource {
       $tagEm.closest('li').find('a[href*="/man-hua-lei-bie/"]').each((i, el) => {
         result.tags.push($(el).text().trim())
       })
+      result.tags = [...new Set(result.tags)]
     }
     const validCategories = ['日漫', '韩漫', '真人', '3D漫画', '同性']
-    for (const tag of result.tags) {
+    let matchedTagIdx = -1
+    for (let i = 0; i < result.tags.length; i++) {
+      const tag = result.tags[i]
       const match = validCategories.find(cat => tag.includes(cat) || cat.includes(tag))
-      if (match) { result.category = match.includes('3D') ? '3D漫画' : match; break }
+      if (match) { result.category = match.includes('3D') ? '3D漫画' : match; matchedTagIdx = i; break }
+    }
+    if (matchedTagIdx >= 0) {
+      result.tags.splice(matchedTagIdx, 1)
     }
     // 如果从标签链接中没提取到分类，回退到文本解析的"类别/分类"字段
     if (!result.category && parsed.category_raw) {
@@ -593,68 +570,64 @@ class Smtt6Source extends ComicSource {
         return await _downloadImage(imageUrl, referer || imageUrl)
       } catch (e) {
         if (i === 2) throw e
-        await delay(1000 * (i + 1))
+        await sleep(1000 * (i + 1))
       }
     }
   }
 }
 
-// ========== 图片下载（Electron net 模块） ==========
+// ========== 图片下载（Node.js https，绕过 Electron referrer 检查） ==========
 function _downloadImage(imageUrl, referer) {
   return new Promise((resolve, reject) => {
     const fp = generateRequestFingerprint()
+    const parsed = new URL(imageUrl)
+    const lib = parsed.protocol === 'https:' ? https : http
 
-    const request = net.request({
+    const options = {
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: parsed.pathname + parsed.search,
       method: 'GET',
-      url: imageUrl,
-      redirect: 'follow',
-    })
+      headers: {
+        'User-Agent': fp.ua,
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Accept-Language': fp.acceptLanguage,
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'no-cache',
+        'Referer': referer || '',
+      },
+      rejectUnauthorized: false,
+    }
 
-    request.setHeader('User-Agent', fp.ua)
-    request.setHeader('Accept', 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8')
-    request.setHeader('Accept-Language', fp.acceptLanguage)
-    request.setHeader('Cache-Control', 'no-cache')
-    request.setHeader('Sec-Ch-Ua', fp.secChUa)
-    request.setHeader('Sec-Ch-Ua-Mobile', '?0')
-    request.setHeader('Sec-Ch-Ua-Platform', fp.platform)
-    request.setHeader('Sec-Fetch-Dest', 'image')
-    request.setHeader('Sec-Fetch-Mode', 'no-cors')
-    request.setHeader('Sec-Fetch-Site', 'same-site')
-    if (referer) request.setHeader('Referer', referer)
-
-    let timeoutTimer = setTimeout(() => {
-      request.abort()
-      reject(new Error('Request timeout'))
-    }, 30000)
-
-    request.on('response', (response) => {
-      clearTimeout(timeoutTimer)
-
-      if (response.statusCode !== 200) {
-        response.destroy()
-        console.warn(`[smtt6] 图片下载失败: HTTP ${response.statusCode} -> ${imageUrl}`)
-        return reject(new Error('HTTP ' + response.statusCode))
+    const req = lib.request(options, (res) => {
+      if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
+        res.resume()
+        const nextUrl = res.headers.location.startsWith('http') ? res.headers.location : new URL(res.headers.location, imageUrl).href
+        return _downloadImage(nextUrl, referer).then(resolve, reject)
+      }
+      if (res.statusCode !== 200) {
+        res.resume()
+        return reject(new Error('HTTP ' + res.statusCode))
       }
 
       const chunks = []
-      response.on('data', (chunk) => chunks.push(chunk))
-      response.on('end', () => {
+      const stream = res.headers['content-encoding'] === 'gzip' ? res.pipe(zlib.createGunzip())
+        : res.headers['content-encoding'] === 'deflate' ? res.pipe(zlib.createInflate())
+        : res.headers['content-encoding'] === 'br' ? res.pipe(zlib.createBrotliDecompress())
+        : res
+
+      stream.on('data', (chunk) => chunks.push(chunk))
+      stream.on('end', () => {
         const buf = Buffer.concat(chunks)
         if (buf.length === 0) return reject(new Error('Empty response'))
         resolve(buf)
       })
-      response.on('error', (e) => {
-        clearTimeout(timeoutTimer)
-        reject(e)
-      })
+      stream.on('error', reject)
     })
 
-    request.on('error', (e) => {
-      clearTimeout(timeoutTimer)
-      reject(e)
-    })
-
-    request.end()
+    req.on('error', reject)
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Request timeout')) })
+    req.end()
   })
 }
 

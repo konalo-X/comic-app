@@ -211,7 +211,7 @@ v-else-if="doubleRight.dummy"
 
     <!-- ===== 底部导航 ===== -->
     <transition name="slide-up">
-      <div v-show="showToolbar" class="reader-nav">
+      <div v-show="showToolbar" class="reader-nav water-ripple">
         <button class="nav-btn" :disabled="chapterIndex <= 0" @click.stop="prevChapter">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
           上一章
@@ -1765,6 +1765,7 @@ onBeforeUnmount(() => {
   background: rgba(10,10,10,.88);
   backdrop-filter: blur(20px); border-top: 1px solid rgba(255,255,255,.04);
   box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
 }
 .nav-btn {
   display: flex; align-items: center; gap: 6px;
@@ -1790,9 +1791,10 @@ onBeforeUnmount(() => {
 .progress-bar-mini .fill { 
   height: 100%; 
   background: linear-gradient(90deg, var(--brand-start, #6366f1), var(--brand-end, #8b5cf6)); 
+  background-size: 300% 100%;
+  animation: progressShimmer 2s linear infinite;
   border-radius: 2px; 
   transition: width .3s ease; 
-  box-shadow: 0 0 8px rgba(99, 102, 241, 0.4);
 }
 
 /* ===== 模式菜单 ===== */

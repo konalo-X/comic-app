@@ -30,6 +30,10 @@ function initListeners() {
   console.log('[crawler] registering IPC listeners')
 
   window.crawlerApi.onProgress((data) => {
+    if (!state.crawling) {
+      state.crawling = true
+      state.progress = 0
+    }
     console.log('[crawler] onProgress:', data.page, data.msg)
     state.message = data.msg || state.message
     const page = data.page || data.current || 0
@@ -60,12 +64,12 @@ function initListeners() {
 
   window.crawlerApi.onEnrichDone((data) => {
     state.progress = 100
-    state.message = (data?.msg || `补全完成！共处理 ${data?.total || 0} 部`) + ' → 正在升级章节名...'
+    state.message = (data?.msg || `补全完成！共处理 ${data?.total || 0} 部`) + ' → 正在章节增强...'
     notifyRefresh()
-    // 自动触发：补全完成 → 升级章节名
+    // 自动触发：补全完成 → 章节增强
     setTimeout(() => {
       state.enriching = false
-      startEnrichChapterNames()
+      startEnrichChapters()
     }, 1500)
   })
 
@@ -81,15 +85,15 @@ function initListeners() {
     setTimeout(() => { state.checking = false }, 2500)
   })
 
-  // 章节名升级事件（详情页链接文本 → 内容页 h2）
-  window.crawlerApi.onEnrichChapterNamesProgress((data) => {
-    state.message = `正在升级章节名 › ${data?.title || ''} (${data?.chapterIndex || 0}/${data?.totalChapters || 0})`
+  // 章节增强事件（详情页链接文本 → 内容页 h2 + 图片数补全）
+  window.crawlerApi.onEnrichChaptersProgress((data) => {
+    state.message = `正在章节增强 › ${data?.title || ''} (${data?.chapterIndex || 0}/${data?.totalChapters || 0})`
     notifyRefresh()
   })
-  window.crawlerApi.onEnrichChapterNamesDone((data) => {
-    state.message = `章节名升级完成！共处理 ${data?.processed || 0} 部，升级 ${data?.totalChapters || 0} 章 → 正在检查更新...`
+  window.crawlerApi.onEnrichChaptersDone((data) => {
+    state.message = `章节增强完成！共处理 ${data?.processed || 0} 部，升级 ${data?.totalImgUpdated || 0} 章 → 正在检查更新...`
     notifyRefresh()
-    // 自动触发：章节名升级完成 → 检查更新
+    // 自动触发：章节增强完成 → 检查更新
     setTimeout(() => {
       state.enrichingChapterNames = false
       startCheckUpdates()
@@ -137,8 +141,6 @@ export async function startCrawl() {
 
   const BASE_URL = 'https://smtt6.com/man-hua-lei-bie/all/ob/time/st/all/page/1'
   try {
-    // 并行启动检查更新（不阻塞爬取）
-    startCheckUpdates()
     const result = await window.crawlerApi.crawlAll(BASE_URL)
     if (result?.existing) {
       console.log('[crawl] 后端已有爬取作业运行中')
@@ -197,21 +199,21 @@ export async function startCheckUpdates() {
   }
 }
 
-export async function startEnrichChapterNames() {
+export async function startEnrichChapters() {
   if (!window.crawlerApi) {
     const ok = await waitForCrawlerApi()
     if (!ok) { alert('爬取功能尚未就绪'); return }
   }
   if (state.enrichingChapterNames) return
   state.enrichingChapterNames = true
-  state.message = '准备升级章节名...'
+  state.message = '准备章节增强...'
   notifyRefresh()
 
   try {
-    await window.crawlerApi.enrichChapterNames()
+    await window.crawlerApi.enrichChapters()
   } catch (e) {
-    console.error('[enrichChapterNames] error:', e)
-    state.message = '升级章节名出错: ' + (e.message || String(e))
+    console.error('[enrichChapters] error:', e)
+    state.message = '章节增强出错: ' + (e.message || String(e))
     state.enrichingChapterNames = false
     notifyRefresh()
   }

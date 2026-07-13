@@ -1,7 +1,7 @@
 <template>
   <div class="filter-card">
     <div class="filter-row">
-      <span class="filter-label">分类</span>
+      <span class="filter-label">TAG</span>
       <div class="filter-tags">
         <a 
           v-for="c in categories" 

@@ -4,7 +4,7 @@
     @click="$emit('click')"
     @dblclick="$emit('dblclick')"
   >
-    <div class="card-thumb">
+    <div class="card-thumb water-ripple">
       <div v-if="skeleton" class="skeleton-thumb"></div>
       <template v-else>
         <img
@@ -239,26 +239,6 @@ defineEmits(['click', 'dblclick', 'toggle-select', 'download'])
   z-index: 4;
   box-shadow: 0 2px 6px rgba(249, 115, 22, 0.4);
   animation: pulseBadge 2s ease-in-out infinite;
-}
-
-@keyframes pulseBadge {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.06); }
-}
-
-.card-progress-bar {
-  position: absolute;
-  bottom: 0; left: 0; right: 0;
-  height: 3px;
-  background: rgba(255,255,255,.15);
-  z-index: 3;
-}
-.card-progress-bar .fill {
-  height: 100%;
-  background: var(--gradient-brand);
-  border-radius: 0 3px 3px 0;
-  transition: width .3s ease;
-  box-shadow: 0 0 6px rgba(99, 102, 241, 0.4);
 }
 
 .skeleton-thumb {

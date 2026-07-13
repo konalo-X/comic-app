@@ -157,12 +157,12 @@
           <path d="M4 15h5v5H4v-5z"/>
           <path d="M15 15h5v5h-5v-5z"/>
         </svg>
-        <h2>分类统计</h2>
+        <h2>TAG统计</h2>
       </div>
       <div class="category-list">
         <div v-for="cat in categoryStats" :key="cat.name" class="category-item">
           <div class="category-info">
-            <span class="category-name">{{ cat.name || '未分类' }}</span>
+            <span class="category-name">{{ cat.name || '无TAG' }}</span>
             <span class="category-count">{{ cat.count || 0 }} 部漫画</span>
           </div>
           <div class="category-bar">
@@ -319,7 +319,7 @@ async function loadCategoryStats() {
     const result = await window.dbApi?.getCategoryStats?.() || { stats: {} }
     const stats = result.stats || {}
     categoryStats.value = Object.entries(stats).map(([name, count]) => ({
-      name: name || '未分类',
+      name: name || '无TAG',
       count: count || 0
     })).sort((a, b) => b.count - a.count)
   } catch (error) {
@@ -722,15 +722,6 @@ function formatSize(bytes) {
 
 .skeleton-line.short {
   width: 60%;
-}
-
-@keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
 }
 
 /* 响应式设计 */

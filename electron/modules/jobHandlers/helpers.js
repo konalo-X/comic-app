@@ -1,0 +1,91 @@
+'use strict'
+
+let jobQueue = null
+let autoTimers = []
+
+const VALID_CATEGORIES = ['日漫', '韩漫', '真人', '3D漫画', '同性']
+
+function deriveCategoryFromTags(...tagSources) {
+  for (const tags of tagSources) {
+    if (!tags) continue
+    const list = Array.isArray(tags) ? tags : String(tags).split(',')
+    for (const tag of list) {
+      const t = tag.trim()
+      if (!t) continue
+      const match = VALID_CATEGORIES.find(cat => t.includes(cat) || cat.includes(t))
+      if (match) return match.includes('3D') ? '3D漫画' : match
+    }
+  }
+  return ''
+}
+
+async function enrichChapters(comic, chaptersToEnrich, source) {
+  const imageCountUpdates = []
+  const chapterNameUpdates = []
+  for (let j = 0; j < chaptersToEnrich.length; j++) {
+    try {
+      const pageList = await source.getPageList(chaptersToEnrich[j].url, comic.sourceUrl)
+      const images = Array.isArray(pageList) ? pageList : (pageList.images || [])
+      const h2Name = (!Array.isArray(pageList) && pageList.chapterName) ? pageList.chapterName : ''
+
+      if (chaptersToEnrich[j].url) {
+        imageCountUpdates.push({ url: chaptersToEnrich[j].url, image_count: images.length })
+      }
+      if (h2Name && h2Name.trim() && h2Name.trim() !== chaptersToEnrich[j].name) {
+        chapterNameUpdates.push({ index: chaptersToEnrich[j].index, name: h2Name.trim() })
+      }
+      await new Promise(r => setTimeout(r, 250))
+    } catch (chE) {}
+  }
+  return { imageCountUpdates, chapterNameUpdates }
+}
+
+function addSyncJob(priority = 3) {
+  if (!jobQueue || !jobQueue.db) {
+    console.warn('[Sync] 队列未初始化，无法添加 sync 任务')
+    return null
+  }
+  try {
+    const existing = jobQueue.db.prepare(
+      `SELECT id, priority FROM job_queue WHERE type = 'sync' AND status IN ('waiting', 'active') LIMIT 1`
+    ).get()
+    if (existing) {
+      if (priority >= existing.priority) {
+        console.log(`[Sync] 已有 sync 任务在等待/执行中 (priority=${existing.priority})，跳过重复创建（新 priority=${priority}）`)
+        return existing.id
+      }
+      console.log(`[Sync] 抢占: 新任务 priority=${priority} 替换现有 priority=${existing.priority}`)
+      jobQueue.cancel(existing.id)
+    }
+  } catch (e) {
+    console.warn('[Sync] 检查已有 sync 任务失败:', e.message)
+  }
+  const checkRateLimit = priority >= 2
+  return jobQueue.add('sync', {}, { priority, maxRetries: 3, checkRateLimit })
+}
+
+function getJobQueue() {
+  return jobQueue
+}
+
+function setJobQueue(q) {
+  jobQueue = q
+}
+
+function getAutoTimers() {
+  return autoTimers
+}
+
+function setAutoTimers(timers) {
+  autoTimers = timers
+}
+
+module.exports = {
+  deriveCategoryFromTags,
+  enrichChapters,
+  addSyncJob,
+  getJobQueue,
+  setJobQueue,
+  getAutoTimers,
+  setAutoTimers
+}

@@ -10,10 +10,10 @@
       </router-view>
     </main>
 
-    <footer class="footer-bar" :class="{ 'footer-expanded': footerExpanded }">
+    <footer class="footer-bar water-ripple" :class="{ 'footer-expanded': footerExpanded }">
       <div class="footer-row">
         <div class="footer-left" @click="footerExpanded = !footerExpanded">
-          <div class="footer-item" v-if="footerTasks.length > 0">
+          <div v-if="footerTasks.length > 0" class="footer-item">
             <span class="dot green pulse"></span>
             <span class="footer-rotate-text">
               <span class="footer-task-label">{{ footerTasks[footerRotateIndex]?.label || '' }}</span>
@@ -21,11 +21,12 @@
               <span v-if="footerTasks[footerRotateIndex]?.waiting > 0" class="tag tag-default">等待 {{ footerTasks[footerRotateIndex].waiting }}</span>
             </span>
           </div>
-          <div class="footer-item" v-else>
+          <div v-else class="footer-item">
             <span class="dot idle"></span> 空闲
           </div>
           <div class="footer-item">总漫画：<strong>{{ footerData.totalComics }}</strong></div>
           <div class="footer-item">并发：<strong>{{ footerData.activeDownloads }} / {{ footerData.downloadConcurrency }}</strong></div>
+          <div v-if="footerData.downloadSpeed !== '0 B/s'" class="footer-item">速度：<strong>{{ footerData.downloadSpeed }}</strong></div>
           <div class="footer-item">硬盘：<strong>{{ footerData.diskFree }}</strong> 可用 / 共 {{ footerData.diskTotal }}</div>
           <div class="footer-item footer-expand-hint">
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -203,6 +204,9 @@ function formatBytes(bytes) {
 let cleanupJobDone = null
 let cleanupCrawlDone = null
 let cleanupEnrichDone = null
+let cleanupDownloadProgress = null
+let cleanupJobProgress = null
+let downloadSpeedTimer = null
 
 let autoEnrichTimer = null
 
@@ -231,7 +235,7 @@ onMounted(() => {
 
   if (window.offlineApi?.onJobDone) {
     cleanupJobDone = window.offlineApi.onJobDone((data) => {
-      addNotification('success', '下载完成', `${data.title} 已下载到本地`)
+      addNotification('success', '下载完成', `${data.comicTitle || data.title || '漫画'} 已下载到本地`)
     })
   }
   if (window.crawlerApi?.onDone) {
@@ -242,6 +246,30 @@ onMounted(() => {
   if (window.crawlerApi?.onEnrichDone) {
     cleanupEnrichDone = window.crawlerApi.onEnrichDone((data) => {
       addNotification('info', '标签补全完成', `共处理 ${data?.enriched || '若干'} 部漫画`)
+    })
+  }
+
+  if (window.downloadApi?.onProgress) {
+    cleanupDownloadProgress = window.downloadApi.onProgress((data) => {
+      if (data?.speed) {
+        footerData.value.downloadSpeed = data.speed
+        if (downloadSpeedTimer) clearTimeout(downloadSpeedTimer)
+        downloadSpeedTimer = setTimeout(() => {
+          footerData.value.downloadSpeed = '0 KB/s'
+        }, 5000)
+      }
+    })
+  }
+
+  if (window.downloadApi?.onJobProgress) {
+    cleanupJobProgress = window.downloadApi.onJobProgress((data) => {
+      if (data?.speed) {
+        footerData.value.downloadSpeed = data.speed
+        if (downloadSpeedTimer) clearTimeout(downloadSpeedTimer)
+        downloadSpeedTimer = setTimeout(() => {
+          footerData.value.downloadSpeed = '0 KB/s'
+        }, 5000)
+      }
     })
   }
 
@@ -271,6 +299,9 @@ onBeforeUnmount(() => {
   if (cleanupJobDone) cleanupJobDone()
   if (cleanupCrawlDone) cleanupCrawlDone()
   if (cleanupEnrichDone) cleanupEnrichDone()
+  if (cleanupDownloadProgress) cleanupDownloadProgress()
+  if (cleanupJobProgress) cleanupJobProgress()
+  if (downloadSpeedTimer) clearTimeout(downloadSpeedTimer)
   window.removeEventListener('keydown', handleGlobalKeydown)
 })
 
@@ -344,6 +375,8 @@ const navItems = [
   z-index: 10;
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(18px);
+  position: relative;
+  overflow: hidden;
 }
 
 .footer-row {

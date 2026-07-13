@@ -79,6 +79,8 @@ function closeWin() { window.windowApi?.close?.() }
   backdrop-filter: blur(20px);
   -webkit-app-region: drag;
   user-select: none;
+  position: relative;
+  overflow: hidden;
 }
 
 .header-left {

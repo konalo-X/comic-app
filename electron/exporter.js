@@ -2,7 +2,7 @@
 const path = require('path')
 const fs = require('fs')
 const AdmZip = require('adm-zip')
-const sharp = require('sharp')
+const sharpPool = require('./modules/sharpPool')
 const { sanitizeFilename: sanitize } = require('./utils')
 
 /**
@@ -12,6 +12,14 @@ const { sanitizeFilename: sanitize } = require('./utils')
  * CBZ 是基于 Zip 的漫画书格式（Comic Book Archive），
  * 可用任何支持 CBZ 的阅读器打开（YACReader, Kavita, ComicRack, Kindle 等）
  */
+function detectImageFormat(buffer) {
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return 'jpg'
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) return 'png'
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) return 'gif'
+  if (buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) return 'webp'
+  return 'webp'
+}
+
 class ArchiveExporter {
   /**
    * 从下载好的漫画目录导出 CBZ
@@ -166,12 +174,24 @@ class ArchiveExporter {
     const coverPath = path.join(sourceDir, 'cover.webp')
     let coverAdded = false
     if (fs.existsSync(coverPath)) {
-      zip.addFile('EPUB/images/cover.webp', fs.readFileSync(coverPath))
-      manifestItems.push({ id: 'cover', href: 'images/cover.webp', mediaType: 'image/webp' })
+      let coverBuf = fs.readFileSync(coverPath)
+      let coverFormat = detectImageFormat(coverBuf)
+      if (coverFormat !== 'webp') {
+        try {
+          coverBuf = await sharpPool.webpConvertToBuffer(coverBuf, { quality: 85 })
+          coverFormat = 'webp'
+        } catch (e) {
+          console.warn('[EPUB] 封面WebP转换失败，保留原格式', e.message)
+        }
+      }
+      const coverMediaType = { 'webp': 'image/webp', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif' }[coverFormat] || 'image/webp'
+      zip.addFile('EPUB/images/cover.webp', coverBuf)
+      manifestItems.push({ id: 'cover', href: 'images/cover.webp', mediaType: coverMediaType })
       coverAdded = true
     }
 
-    // ---------- 3. 遍历章节 ----------
+    // ---------- 3. 收集所有章节图片 ----------
+    const allChapters = []
     for (let i = 0; i < chapters.length; i++) {
       const ch = chapters[i]
       const chDir = ch.dir && path.isAbsolute(ch.dir)
@@ -182,7 +202,6 @@ class ArchiveExporter {
       const files = fs.readdirSync(chDir)
         .filter(f => /\.(webp|jpg|jpeg|png|gif)$/i.test(f))
         .sort((a, b) => {
-          // 按数字排序：001.webp, 002.webp...
           const na = parseInt(a.match(/^(\d+)/)?.[1] || '0', 10)
           const nb = parseInt(b.match(/^(\d+)/)?.[1] || '0', 10)
           return na - nb
@@ -190,51 +209,59 @@ class ArchiveExporter {
 
       if (files.length === 0) continue
 
-      // 章节文件夹名（用于图片和xhtml命名）
       const chFolderName = ch.dir ? path.basename(ch.dir) : `${ch.index + 1 || i + 1}-${sanitize(ch.name)}`
 
-      // 添加图片到 EPUB
       const imgNames = []
       for (let j = 0; j < files.length; j++) {
         const srcPath = path.join(chDir, files[j])
-        const ext = files[j].split('.').pop().toLowerCase()
-        // 图片命名: {章节文件夹名}_{序号}.webp
-        const imgFileName = `${chFolderName}_${String(j + 1).padStart(3, '0')}.${ext === 'jpg' ? 'jpg' : ext}`
-        const mediaType = { 'webp': 'image/webp', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif' }[ext] || 'image/webp'
+        const imgFileName = `${chFolderName}_${String(j + 1).padStart(3, '0')}.webp`
 
-        // 根据图片质量设置处理图片
         let imgBuffer = fs.readFileSync(srcPath)
+        let actualFormat = detectImageFormat(imgBuffer)
+
+        if (actualFormat !== 'webp') {
+          try {
+            imgBuffer = await sharpPool.webpConvertToBuffer(imgBuffer, { quality: 85 })
+            actualFormat = 'webp'
+          } catch (e) {
+            console.warn(`[EPUB] 图片WebP转换失败，保留原格式: ${files[j]}`, e.message)
+          }
+        }
+
         if (imageQuality && imageQuality !== 'original') {
           try {
             const quality = imageQuality === 'high' ? 80 : 50
             const maxWidth = imageQuality === 'high' ? 1200 : 800
-            imgBuffer = await sharp(imgBuffer)
-              .resize(maxWidth, null, { withoutEnlargement: true })
-              .webp({ quality })
-              .toBuffer()
+            imgBuffer = await sharpPool.resizeWebpToBuffer(imgBuffer, { maxWidth, quality })
+            actualFormat = 'webp'
           } catch (e) {
             console.warn(`[EPUB] 图片压缩失败，使用原图: ${files[j]}`, e.message)
           }
         }
+
+        const mediaType = { 'webp': 'image/webp', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif' }[actualFormat] || 'image/webp'
 
         zip.addFile(`EPUB/images/${imgFileName}`, imgBuffer)
         manifestItems.push({ id: `img-${i}-${j}`, href: `images/${imgFileName}`, mediaType })
         imgNames.push(imgFileName)
       }
 
-      // 章节 xhtml
-      const xhtmlFileName = `${chFolderName}.xhtml`
-      zip.addFile(`EPUB/chapters/${xhtmlFileName}`, Buffer.from(this._chapterXHTML(ch.name || chFolderName, imgNames)))
-      manifestItems.push({ id: chFolderName, href: `chapters/${xhtmlFileName}`, mediaType: 'application/xhtml+xml' })
-
-      // NCX navPoint
-      navPoints.push({
-        id: chFolderName,
-        label: chFolderName,
-        src: `chapters/${xhtmlFileName}`
-      })
+      allChapters.push({ chFolderName, chName: ch.name || chFolderName, imgNames })
 
       if (onProgress) onProgress({ current: i + 1, total: chapters.length })
+    }
+
+    // ---------- 4. 单个 XHTML（所有章节合并，锚点分隔） ----------
+    const xhtmlId = 'all-pages'
+    zip.addFile('EPUB/chapters/all-pages.xhtml', Buffer.from(this._allPagesXHTML(allChapters)))
+    manifestItems.push({ id: xhtmlId, href: 'chapters/all-pages.xhtml', mediaType: 'application/xhtml+xml' })
+
+    for (const ch of allChapters) {
+      navPoints.push({
+        id: ch.chFolderName,
+        label: ch.chFolderName,
+        src: `chapters/all-pages.xhtml#${ch.chFolderName}`
+      })
     }
 
     // ---------- 4. nav.xhtml ----------
@@ -299,16 +326,10 @@ class ArchiveExporter {
 }
 html, body {
     width: 100%;
-    height: 100%;
-    overflow: hidden;
     line-height: 0;
 }
 .comic-container {
     width: 100%;
-    height: 100%;
-    overflow-y: auto;
-    scroll-snap-type: y mandatory;
-    -webkit-overflow-scrolling: touch;
 }
 .no-images {
     display: flex;
@@ -328,7 +349,6 @@ html, body {
     margin: 0 !important;
     padding: 0 !important;
     border: none !important;
-    scroll-snap-align: stretch !important;
 }
 .chapter-nav {
     position: fixed;
@@ -401,21 +421,43 @@ ${imgs}
 </html>`
   }
 
+  _allPagesXHTML(allChapters) {
+    const sections = allChapters.map(ch => {
+      const anchor = `<a id="${escHtml(ch.chFolderName)}"></a>`
+      const imgs = ch.imgNames.map(n =>
+        `        <img src="../images/${n}" alt="${escHtml(ch.chName)}" class="comic-img"/>`
+      ).join('\n')
+      return `      ${anchor}\n${imgs}`
+    }).join('\n')
+    return `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN" xml:lang="zh-CN">
+  <head>
+    <title>Comic</title>
+    <link rel="stylesheet" type="text/css" href="../css/style.css"/>
+  </head>
+  <body>
+    <div class="comic-container">
+${sections}
+    </div>
+  </body>
+</html>`
+  }
+
   /**
    * 生成 content.opf
    */
   _opfXML(opts) {
     const { title, author, language, isbn, manifestItems, navPoints, coverAdded } = opts
 
-    // manifest 条目
     const manifestXml = manifestItems.map(item => {
       const props = item.properties ? ` properties="${escHtml(item.properties)}"` : ''
       return `        <item id="${escHtml(item.id)}" href="${escHtml(item.href)}" media-type="${escHtml(item.mediaType)}"${props}/>`
     }).join('\n')
 
-    // spine 条目
-    const spineXml = navPoints.map(p =>
-      `        <itemref idref="${escHtml(p.id)}"/>`
+    const xhtmlItems = manifestItems.filter(item => item.mediaType === 'application/xhtml+xml' && item.id !== 'nav')
+    const spineXml = xhtmlItems.map(item =>
+      `        <itemref idref="${escHtml(item.id)}"/>`
     ).join('\n')
 
     // metadata

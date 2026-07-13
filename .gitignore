@@ -29,3 +29,5 @@ comics.sqlite
 # 私人导出图片（微信 mmexport 等）
 mmexport*.JPG
 mmexport*.jpg
+# 旧代码备份（不应入库）
+*.bak

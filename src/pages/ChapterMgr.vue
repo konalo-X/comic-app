@@ -51,17 +51,13 @@
             <span class="meta-label">状态：</span>
             <span v-if="selectedComic.status" class="meta-badge" :class="{ completed: isCompleted(selectedComic.status) }">{{ selectedComic.status }}</span>
           </div>
-          <div class="hero-meta-section">
-            <span class="meta-label">类别：</span>
-            <span v-if="selectedComic.category" class="meta-tag">{{ selectedComic.category }}</span>
+          <div v-if="selectedComic.tags && selectedComic.tags.length" class="hero-tags-section">
+            <span class="meta-label">TAG：</span>
+            <span v-for="tag in selectedComic.tags" :key="tag" class="tag-pill">{{ tag }}</span>
           </div>
           <div class="hero-meta-section">
             <span class="meta-label">作者：</span>
             <span v-if="selectedComic.author" class="meta-tag author-tag">{{ selectedComic.author }}</span>
-          </div>
-          <div v-if="selectedComic.tags && selectedComic.tags.length" class="hero-tags-section">
-            <span class="meta-label">标签：</span>
-            <span v-for="tag in selectedComic.tags" :key="tag" class="tag-pill">{{ tag }}</span>
           </div>
           <div class="hero-desc-section">
             <span class="meta-label">简介：</span>
@@ -71,32 +67,47 @@
             </div>
           </div>
           <div class="hero-actions">
-            <button class="btn-read" @click="startReading">
-              <i class="icon">▶</i> 开始阅读
+            <button 
+              class="btn-read" 
+              :class="{ disabled: !hasChapters }"
+              :disabled="!hasChapters"
+              @click="startReading"
+            >
+              <i class="icon">▶</i> {{ hasChapters ? '开始阅读' : '暂无章节' }}
             </button>
-            <button class="btn-fav" :class="{ active: isFav }" @click="toggleFav">
+            <button 
+              class="btn-fav" 
+              :class="{ active: isFav }" 
+              :disabled="!selectedComic"
+              @click="toggleFav"
+            >
               <i class="icon">{{ isFav ? '★' : '☆' }}</i> {{ isFav ? '已在书架' : '加入书架' }}
             </button>
             <button 
               class="btn-cache" 
-              :class="{ loading: caching, disabled: isDownloadDisabled }" 
+              :class="{ loading: caching || isInQueue, disabled: isDownloadDisabled }" 
               :disabled="isDownloadDisabled"
               @click="cacheComic"
             >
-              <i class="icon">{{ caching ? '⟳' : '⬇' }}</i> 
-              {{ caching ? '下载中...' : (hasUpdate ? '下载更新' : (isDownloaded ? '已下载' : '下载漫画')) }}
+              <i class="icon">{{ caching || isInQueue ? '⟳' : '⬇' }}</i> 
+              {{ caching ? '下载中...' : (isInQueue ? '排队中...' : (!hasChapters ? '暂无章节' : (hasUpdate ? '下载更新' : (isDownloaded ? '已下载' : '下载漫画')))) }}
             </button>
-            <button class="btn-enrich" :class="{ loading: enriching }" :disabled="enriching" @click="enrichComic">
+            <button 
+              class="btn-enrich" 
+              :class="{ loading: enriching, disabled: !canEnrich }" 
+              :disabled="enriching || !canEnrich"
+              @click="enrichComic"
+            >
               <i class="icon">{{ enriching ? '⟳' : 'ⓘ' }}</i> {{ enriching ? '补全中...' : '补全详情' }}
             </button>
             <button 
               class="btn-epub" 
-              :class="{ loading: exportingEpub }" 
-              :disabled="exportingEpub || !isDownloaded"
+              :class="{ loading: exportingEpub, disabled: !isDownloaded || epubExists }" 
+              :disabled="exportingEpub || !isDownloaded || epubExists"
               @click="generateEpub"
             >
               <i class="icon">{{ exportingEpub ? '⟳' : '📖' }}</i> 
-              {{ exportingEpub ? '生成中...' : '生成 EPUB' }}
+              {{ exportingEpub ? '生成中...' : (epubExists ? '已生成 EPUB' : '生成 EPUB') }}
             </button>
           </div>
         </div>
@@ -214,10 +225,28 @@ const hasUpdate = computed(() => {
   return isDownloaded.value && onlineCount > localCount
 })
 
+// 跟踪当前漫画是否在下载队列中
+const isInQueue = ref(false)
+
+// 跟踪是否正在自动获取章节
+const autoFetchingChapters = ref(false)
+
+// 计算是否有章节可下载
+const hasChapters = computed(() => {
+  return (selectedComic.value?.chapters?.length || 0) > 0
+})
+
+// 计算是否可以补全详情（需要 sourceUrl）
+const canEnrich = computed(() => {
+  return !!selectedComic.value?.sourceUrl
+})
+
 // 计算下载按钮是否应该禁用
 const isDownloadDisabled = computed(() => {
-  // 下载中不禁用
-  if (caching.value) return false
+  // 下载中或已在队列中 → 禁用（防止重复点击）
+  if (caching.value || isInQueue.value) return true
+  // 没有章节数据 → 禁用
+  if (!hasChapters.value) return true
   // 已下载且无更新时禁用
   return isDownloaded.value && !hasUpdate.value
 })
@@ -321,11 +350,32 @@ async function toggleFav() {
   const newFav = !isFav.value
 
   if (window.dbApi?.setFavorite) {
-    await window.dbApi.setFavorite(id, newFav)
+    try {
+      await window.dbApi.setFavorite(id, newFav)
+    } catch (e) {
+      console.error('[收藏] 操作失败:', e)
+      return
+    }
   }
 
   selectedComic.value.favorited = newFav
   isFav.value = newFav
+}
+
+// 检查当前漫画是否在下载队列中
+async function checkQueueStatus() {
+  if (!selectedComic.value || !window.jobApi) return
+  try {
+    const jobs = await window.jobApi.list('active', 100)
+    const inQueue = jobs.some(j =>
+      j.type === 'downloadComic' &&
+      (j.payload?.sourceUrl === selectedComic.value.sourceUrl ||
+       j.payload?.comicTitle === selectedComic.value.title)
+    )
+    isInQueue.value = inQueue
+  } catch (e) {
+    console.error('[队列检查] 失败:', e)
+  }
 }
 
 async function cacheComic() {
@@ -333,7 +383,7 @@ async function cacheComic() {
     alert('请先选择一本漫画')
     return
   }
-  if (caching.value) return
+  if (caching.value || isInQueue.value) return
 
   if (!window.offlineApi) {
     alert('下载功能未初始化，请重启应用后重试')
@@ -341,6 +391,7 @@ async function cacheComic() {
   }
 
   caching.value = true
+  let wasSkipped = false
 
   try {
     // 查询磁盘目录数，仅用于显示信息（不用于确定下载起始位置）
@@ -353,7 +404,31 @@ async function cacheComic() {
     // ⚠️ 关键：必须使用网站返回的章节列表（selectedComic.chapters）
     // 不能用磁盘目录编号推断（目录编号 ≠ 章节号）
     // 例如「100-第99話」表示：网站第 100 个条目，内容是「第99話」
-    const allChapters = selectedComic.value.chapters || []
+    let allChapters = selectedComic.value.chapters || []
+
+    // 如果章节为空但漫画是在线漫画，先自动获取章节
+    if (allChapters.length === 0 && selectedComic.value.sourceUrl && !selectedComic.value.local_path) {
+      // 如果正在自动获取章节，等待完成
+      if (autoFetchingChapters.value) {
+        while (autoFetchingChapters.value) {
+          await new Promise(r => setTimeout(r, 200))
+        }
+        allChapters = selectedComic.value.chapters || []
+      }
+      // 如果仍然为空，主动触发获取
+      if (allChapters.length === 0 && window.detailApi) {
+        try {
+          const result = await window.detailApi.enrichComic(selectedComic.value.sourceUrl)
+          if (result.success && result.comic) {
+            const idx = comics.value.findIndex(c => (c._id || c.sourceUrl) === selectedId.value)
+            if (idx >= 0) comics.value[idx] = result.comic
+            allChapters = result.comic.chapters || []
+          }
+        } catch (e) {
+          console.warn('[下载前获取章节] 失败:', e.message)
+        }
+      }
+    }
 
     if (allChapters.length === 0) {
       alert('该漫画暂无章节可下载，请先从网站打开该漫画以获取章节列表')
@@ -366,9 +441,26 @@ async function cacheComic() {
       url: ch.url
     }))
 
+    // 确保漫画标题不为空，防止生成"未知漫画"任务
+    let comicTitle = selectedComic.value.title?.trim()
+    if (!comicTitle) {
+      // 尝试从 sourceUrl 提取标题
+      try {
+        const url = new URL(selectedComic.value.sourceUrl)
+        const pathParts = url.pathname.split('/').filter(Boolean)
+        const lastPart = pathParts[pathParts.length - 1]
+        if (lastPart) {
+          comicTitle = lastPart.replace(/\.html?$/, '').replace(/[-_]/g, ' ')
+        }
+      } catch (_) {}
+    }
+    if (!comicTitle) {
+      comicTitle = '未命名漫画'
+    }
+
     const isFirstDownload = diskChapterCount === 0
 
-    console.log(`[缓存] ${isFirstDownload ? '首次下载' : '增量更新'}: ${selectedComic.value.title}`)
+    console.log(`[缓存] ${isFirstDownload ? '首次下载' : '增量更新'}: ${comicTitle}`)
     console.log(`[缓存] 网站共 ${allChapters.length} 章，磁盘已有 ${diskChapterCount} 个目录`)
     console.log(`[缓存] 后端将逐个检测，已存在则跳过，不存在则下载`)
 
@@ -377,24 +469,30 @@ async function cacheComic() {
     // 检测到目录存在且有图片 → skip（跳过）
     // 检测不到 → 真正下载
     const result = await window.offlineApi.queueAllChapters({
-      comicTitle: selectedComic.value.title,
+      comicTitle,
       chapters: chaptersForQueue,
       referer: selectedComic.value.sourceUrl || '',
       sourceUrl: selectedComic.value.sourceUrl || '',
       coverUrl: selectedComic.value.cover || ''
     })
+    wasSkipped = result.skipped
 
     console.log('[缓存] 已添加到队列, jobIds:', result.jobIds)
-    if (isFirstDownload) {
-      alert(`已添加 ${result.jobIds?.length || chaptersForQueue.length} 章到下载队列，可在「下载管理」页面查看进度`)
+    if (result.skipped) {
+      alert(`《${selectedComic.value.title}》已在下载队列中，请勿重复添加`)
+    } else if (isFirstDownload) {
+      alert(`已添加《${selectedComic.value.title}》共 ${chaptersForQueue.length} 章到下载队列，可在「下载管理」页面查看进度`)
     } else {
-      alert(`增量更新：已添加 ${result.jobIds?.length || chaptersForQueue.length} 章到下载队列\n\n前 ${diskChapterCount} 章检测到已存在会自动跳过，新增章节将下载`)
+      alert(`增量更新：已添加《${selectedComic.value.title}》共 ${chaptersForQueue.length} 章到下载队列\n\n前 ${diskChapterCount} 章检测到已存在会自动跳过，新增章节将下载`)
     }
   } catch (e) {
     console.error('[缓存] 添加下载失败:', e)
     alert('添加下载失败: ' + (e.message || '未知错误'))
   } finally {
     caching.value = false
+    if (!wasSkipped) {
+      isInQueue.value = true
+    }
   }
 }
 
@@ -558,6 +656,8 @@ watch(selectedId, () => {
   updateFavStatus()
   checkEpubExists()
   loadDownloadedChapterIndices()
+  checkQueueStatus()  // 检查是否在下载队列中
+  autoFetchChapters() // 自动获取在线漫画章节
   // 记录阅读历史
   if (selectedComic.value) {
     window.__recordHistory?.({
@@ -568,6 +668,30 @@ watch(selectedId, () => {
     })
   }
 })
+
+async function autoFetchChapters() {
+  const comic = selectedComic.value
+  if (!comic || !comic.sourceUrl) return
+  if (comic.local_path) return
+  if (comic.chapters && comic.chapters.length > 0) return
+  if (autoFetchingChapters.value) return
+  if (!window.detailApi) return
+
+  autoFetchingChapters.value = true
+  try {
+    const result = await window.detailApi.enrichComic(comic.sourceUrl)
+    if (result.success && result.comic) {
+      const idx = comics.value.findIndex(c => (c._id || c.sourceUrl) === selectedId.value)
+      if (idx >= 0) {
+        comics.value[idx] = result.comic
+      }
+    }
+  } catch (e) {
+    console.warn('[自动获取章节] 失败:', e.message)
+  } finally {
+    autoFetchingChapters.value = false
+  }
+}
 
 async function checkEpubExists() {
   if (!selectedComic.value?.title) return
@@ -793,14 +917,14 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 
 .hero-tags-section {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   flex-wrap: wrap;
 }
 
@@ -858,7 +982,7 @@ onMounted(() => {
 }
 
 .hero-desc-section {
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .hero-desc-section .meta-label {
@@ -924,6 +1048,17 @@ onMounted(() => {
   }
 }
 
+.btn-read.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.btn-read.disabled:hover {
+  transform: none;
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .btn-fav {
   padding: 12px 24px;
   border-radius: 12px;
@@ -960,6 +1095,16 @@ onMounted(() => {
     transform: scale(0.96);
     transition: transform 0.1s;
   }
+}
+
+.btn-fav:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-fav:disabled:hover {
+  transform: none;
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .btn-cache {
@@ -1050,6 +1195,16 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
+.btn-enrich.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-enrich.disabled:hover {
+  transform: none;
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .btn-enrich .icon {
   display: inline-block;
   font-style: normal;
@@ -1088,6 +1243,17 @@ onMounted(() => {
   opacity: 0.4;
   cursor: not-allowed;
   transform: none;
+}
+
+.btn-epub.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: rgba(139, 92, 246, 0.1);
+}
+
+.btn-epub.disabled:hover {
+  transform: none;
+  background: rgba(139, 92, 246, 0.1);
 }
 
 .btn-epub.loading {
@@ -1229,7 +1395,7 @@ onMounted(() => {
 
 .ch-number {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 400;
   color: var(--text-dim);
   transition: color 0.2s;
 }
@@ -1241,11 +1407,16 @@ onMounted(() => {
 
 .ch-title {
   font-size: 11px;
-  color: var(--text-sub);
+  color: var(--text-dim);
   margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.chapter-item.downloaded .ch-title {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .chapter-item.active .ch-number {

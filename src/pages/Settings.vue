@@ -70,10 +70,10 @@
             </button>
 
             <!-- 扫描进度条与状态文字 -->
-            <div v-if="scanningNow || scanProgressText" class="scan-progress-box">
+            <div v-if="scanningNow || scanProgressText" class="scan-progress-box water-ripple">
               <div class="scan-progress-text">{{ scanProgressText || '准备扫描...' }}</div>
-              <div class="scan-progress-bar">
-                <div class="scan-progress-fill" :style="{ width: scanProgressPct + '%' }"></div>
+              <div class="progress-bar scan-progress-bar">
+                <div class="fill" :style="{ width: scanProgressPct + '%' }"></div>
               </div>
               <div class="scan-progress-meta">
                 <span>{{ scanProgressCurrent }} / {{ scanProgressTotal }}</span>
@@ -672,6 +672,7 @@ export default {
   background: var(--bg-muted);
   border: 1px solid var(--border-light);
   border-radius: var(--radius);
+  overflow: hidden;
 }
 
 .scan-progress-text {
@@ -684,17 +685,6 @@ export default {
 
 .scan-progress-bar {
   width: 100%;
-  height: 6px;
-  background: var(--border-light);
-  border-radius: 999px;
-  overflow: hidden;
-}
-
-.scan-progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--brand), #60a5fa);
-  border-radius: 999px;
-  transition: width 0.2s ease;
 }
 
 .scan-progress-meta {

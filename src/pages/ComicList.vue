@@ -16,7 +16,7 @@
         <a :class="['head-tab', { active: activeSort === 'hits' }]" href="javascript:;" @click="activeSort = 'hits'">按阅读</a>
       </div>
       <div class="head-actions">
-        <button class="text-btn" :disabled="crawlState.crawling || crawlState.enriching || crawlState.checking" @click="clearAll">清空</button>
+        <button class="text-btn" :disabled="crawlState.crawling || crawlState.enriching || crawlState.checking || clearing" @click="clearAll">{{ clearing ? '清空中...' : '清空' }}</button>
         <button class="text-btn text-btn-primary" :disabled="crawlState.crawling || crawlState.enriching || crawlState.checking || crawlState.enrichingChapterNames" @click="startCrawl">
           {{ buttonText }}
         </button>
@@ -33,9 +33,9 @@
       <span v-if="categoryStatsText" class="head-count stats-text">{{ categoryStatsText }}</span>
     </div>
 
-    <div v-if="crawlState.crawling || crawlState.enriching || crawlState.checking" class="crawl-status card" :class="{ 'is-checking': crawlState.checking }">
-      <div class="progress-bar" :class="{ 'is-checking': crawlState.checking }">
-        <div class="fill" :style="{ width: crawlState.progress + '%' }"></div>
+    <div v-if="crawlState.crawling || crawlState.enriching || crawlState.checking" class="crawl-status card water-ripple" :class="{ 'is-checking': crawlState.checking }">
+      <div class="progress-bar">
+        <div class="fill" :class="{ checking: crawlState.checking }" :style="{ width: crawlState.progress + '%' }"></div>
       </div>
       <span class="crawl-text">{{ crawlState.message }}</span>
     </div>
@@ -60,7 +60,7 @@
 
     <div v-if="loadError" class="load-error card">
       <span class="load-error-text">加载失败，请重试</span>
-      <button class="btn btn-sm btn-primary" @click="loadPage(page)">重新加载</button>
+      <button class="btn btn-sm btn-primary" @click="loadPage(page, true)">重新加载</button>
     </div>
 
     <div v-if="comics.length > 0 || !initialLoaded" class="comic-grid">
@@ -81,17 +81,17 @@
     </div>
 
     <div v-if="totalPages > 1" class="pagination">
-      <a v-if="page > 1" class="page-btn" href="javascript:;" @click="loadPage(page - 1)">
+      <a v-if="page > 1" class="page-btn" href="javascript:;" @click="loadPage(page - 1, true)">
         <span class="prev-icon">◂</span><span class="prev-text">上一页</span>
       </a>
       <a
 v-for="p in visiblePages" :key="p"
         :class="['page-num', { active: p === page }]"
-        href="javascript:;" @click="loadPage(p)">{{ p }}</a>
-      <a v-if="page < totalPages" class="page-btn" href="javascript:;" @click="loadPage(page + 1)">
+        href="javascript:;" @click="loadPage(p, true)">{{ p }}</a>
+      <a v-if="page < totalPages" class="page-btn" href="javascript:;" @click="loadPage(page + 1, true)">
         <span class="next-text">下一页</span><span class="next-icon">▸</span>
       </a>
-      <a v-if="totalPages > 8" class="page-btn" href="javascript:;" @click="loadPage(totalPages)">
+      <a v-if="totalPages > 8" class="page-btn" href="javascript:;" @click="loadPage(totalPages, true)">
         <span class="last-icon">▸▸</span>
       </a>
     </div>
@@ -125,10 +125,20 @@ const globalSearch = inject('globalSearch', ref(''))
 const searchTrigger = inject('searchTrigger', ref(0))
 const searchKeyword = ref('')
 
-const activeCategory = ref('all')
-const activeSource = ref('all')
-const activeSort = ref('time')
-const activeStatus = ref('all')
+// 从 sessionStorage 恢复筛选状态
+function getStoredFilter(key, defaultValue) {
+  try {
+    const stored = sessionStorage.getItem(`comicList_${key}`)
+    return stored !== null ? stored : defaultValue
+  } catch {
+    return defaultValue
+  }
+}
+
+const activeCategory = ref(getStoredFilter('category', 'all'))
+const activeSource = ref(getStoredFilter('source', 'all'))
+const activeSort = ref(getStoredFilter('sort', 'time'))
+const activeStatus = ref(getStoredFilter('status', 'all'))
 const page = ref(1)
 const pageSize = ref(24)
 const comics = ref([])
@@ -141,6 +151,7 @@ const loadError = ref(false)
 const batchMode = ref(false)
 const selectedIds = ref(new Set())
 const batchProcessing = ref(false)
+const clearing = ref(false)
 
 function toggleBatchMode() {
   batchMode.value = !batchMode.value
@@ -152,24 +163,37 @@ function toggleSelect(e, id) {
   if (s.has(id)) s.delete(id); else s.add(id)
   selectedIds.value = new Set(s)
 }
+// 保存筛选状态到 sessionStorage
+function storeFilter(key, value) {
+  try {
+    sessionStorage.setItem(`comicList_${key}`, value)
+  } catch (e) {
+    console.warn('保存筛选状态失败:', e)
+  }
+}
+
 function onCategoryChange(val) {
   activeCategory.value = val
+  storeFilter('category', val)
   page.value = 1
-  loadPage(1)
+  loadPage(1, true)
 }
 function onStatusChange(val) {
   activeStatus.value = val
+  storeFilter('status', val)
   page.value = 1
-  loadPage(1)
+  loadPage(1, true)
 }
 function onSourceChange(val) {
   activeSource.value = val
+  storeFilter('source', val)
   page.value = 1
-  loadPage(1)
+  loadPage(1, true)
 }
-watch(activeSort, () => {
+watch(activeSort, (val) => {
+  storeFilter('sort', val)
   page.value = 1
-  loadPage(1)
+  loadPage(1, true)
 })
 function selectAll() {
   selectedIds.value = new Set(pagedComics.value.map(c => c._id || c.sourceUrl))
@@ -186,7 +210,7 @@ async function batchDelete() {
   try {
     await window.batchApi?.delete(ids)
     selectedIds.value = new Set()
-    loadPage(page.value)
+    loadPage(page.value, true)
   } catch (e) { console.error('batch delete error:', e) }
   finally { batchProcessing.value = false }
 }
@@ -223,7 +247,6 @@ async function batchDownload() {
   if (!ok) return
   batchProcessing.value = true
   try {
-    // 并行下载，最多 3 个并发
     const results = await batchProcess(ids, async (id) => {
       const comic = comics.value.find(c => (c._id || c.sourceUrl) === id)
       if (comic && comic.chapters && comic.chapters.length > 0) {
@@ -231,19 +254,18 @@ async function batchDownload() {
           name: ch.name,
           url: ch.url
         }))
-        const comicData = {
-          title: comic.title,
-          cover: comic.cover || '',
-          chapters: chapters,
-          referer: comic.sourceUrl || ''
-        }
-        await window.downloadApi?.comic?.(comicData)
+        await window.offlineApi?.queueAllChapters?.({
+          comicTitle: comic.title,
+          chapters,
+          referer: comic.sourceUrl || '',
+          sourceUrl: comic.sourceUrl || '',
+          coverUrl: comic.cover || ''
+        })
       } else {
         throw new Error('无章节数据')
       }
     }, 3)
-    
-    showToast(`✅ 下载完成：成功 ${results.success} 部，失败 ${results.failed} 部`)
+    showToast(`✅ 已加入下载队列：成功 ${results.success} 部，失败 ${results.failed} 部`)
     selectedIds.value = new Set()
   } catch (e) { 
     console.error('batch download error:', e)
@@ -307,7 +329,7 @@ const buttonText = computed(() => {
   if (crawlState.crawling) return '爬取中...'
   if (crawlState.enriching) return '补全标签中...'
   if (crawlState.checking) return '检查更新中...'
-  if (crawlState.enrichingChapterNames) return '升级章节名中...'
+  if (crawlState.enrichingChapterNames) return '章节增强中...'
   return '爬取漫画'
 })
 
@@ -369,24 +391,30 @@ async function loadProgressMap() {
 
 let searchTimer = null
 watch(globalSearch, (val) => {
-  // 防抖 300ms
   clearTimeout(searchTimer)
   searchTimer = setTimeout(() => {
     searchKeyword.value = val.trim()
     page.value = 1
-    loadPage(1)
+    loadPage(1, true)
   }, 300)
 })
 
-// 按回车立即搜索
 watch(searchTrigger, () => {
   clearTimeout(searchTimer)
   searchKeyword.value = globalSearch.value.trim()
   page.value = 1
-  loadPage(1)
+  loadPage(1, true)
 })
 
-async function loadPage(p) {
+let isLoading = false
+let loadVersion = 0
+
+async function loadPage(p, force = false) {
+  if (isLoading && !force) {
+    console.log('[ComicList] loadPage 被跳过：正在加载中')
+    return
+  }
+  const currentVersion = ++loadVersion
   page.value = p
   loadError.value = false
   if (!window.dbApi) {
@@ -394,6 +422,7 @@ async function loadPage(p) {
     loadError.value = true
     return
   }
+  isLoading = true
   try {
     const filters = {
       category: activeCategory.value,
@@ -406,19 +435,25 @@ async function loadPage(p) {
     } else if (activeSource.value === 'online') {
       filters.onlineOnly = true
     }
-    console.log('[Filter] 加载页面，筛选条件:', filters)
     const result = await window.dbApi.getComics(p, pageSize.value, filters)
+    if (currentVersion !== loadVersion) {
+      return
+    }
     let docs = result.docs
 
     totalComics.value = result.total
     totalPages.value = Math.max(1, Math.ceil(result.total / pageSize.value))
 
     comics.value = docs
-    console.log(`[Filter] 结果: ${docs.length} 条（当前页）, 总计: ${totalComics.value} 部`)
     initialLoaded.value = true
   } catch (e) {
+    if (currentVersion !== loadVersion) return
     console.error('加载漫画失败:', e)
     loadError.value = true
+  } finally {
+    if (currentVersion === loadVersion) {
+      isLoading = false
+    }
   }
 }
 
@@ -426,10 +461,9 @@ async function loadCategoryStats() {
   if (!window.dbApi || !window.dbApi.getCategoryStats) return
   try {
     const stats = await window.dbApi.getCategoryStats()
-    console.log('[Stats] 分类统计:', stats)
     if (stats && stats.stats) {
       const parts = Object.entries(stats.stats).map(([k, v]) => `${k}:${v}`)
-      categoryStatsText.value = `数据库: ${parts.join(' ')} | 未分类:${stats.untagged}`
+      categoryStatsText.value = `数据库: ${parts.join(' ')} | 无TAG:${stats.untagged}`
     }
   } catch (e) {
     console.error('加载分类统计失败:', e)
@@ -438,12 +472,21 @@ async function loadCategoryStats() {
 
 async function clearAll() {
   if (!window.dbApi) return
+  if (clearing.value) return
   if (!confirm('确定要清空所有漫画数据吗？此操作不可恢复！')) return
-  await window.dbApi.clearComics()
-  comics.value = []
-  totalComics.value = 0
-  totalPages.value = 1
-  page.value = 1
+  clearing.value = true
+  try {
+    await window.dbApi.clearComics()
+    comics.value = []
+    totalComics.value = 0
+    totalPages.value = 1
+    page.value = 1
+  } catch (e) {
+    console.error('清空失败:', e)
+    alert('清空失败: ' + (e.message || '未知错误'))
+  } finally {
+    clearing.value = false
+  }
 }
 
 // 下载单个漫画
@@ -452,7 +495,7 @@ async function downloadComic(comic) {
     alert('该漫画暂无章节可下载')
     return
   }
-  if (!window.downloadApi) {
+  if (!window.offlineApi) {
     alert('下载功能未初始化，请重启应用后重试')
     return
   }
@@ -462,21 +505,18 @@ async function downloadComic(comic) {
     url: ch.url
   }))
   
-  const comicData = {
-    title: comic.title,
-    cover: comic.cover || '',
-    chapters: chapters,
-    referer: comic.sourceUrl || ''
-  }
-  
   try {
-    const result = await window.downloadApi.comic(comicData)
-    if (result.success) {
-      alert(`下载完成！\n保存路径: ${result.path}\n成功: ${result.successImages} 张图片\n失败: ${result.failedChapters} 章`)
-      // 刷新列表
-      loadPage(page.value)
+    const result = await window.offlineApi.queueAllChapters({
+      comicTitle: comic.title,
+      chapters,
+      referer: comic.sourceUrl || '',
+      sourceUrl: comic.sourceUrl || '',
+      coverUrl: comic.cover || ''
+    })
+    if (result.skipped) {
+      alert(`《${comic.title}》已在下载队列中，请勿重复添加`)
     } else {
-      alert(`下载失败: ${result.error}`)
+      alert(`已添加《${comic.title}》共 ${chapters.length} 章到下载队列，可在「下载管理」页面查看进度`)
     }
   } catch (e) {
     console.error('下载异常:', e)
@@ -485,16 +525,20 @@ async function downloadComic(comic) {
 }
 
 // 监听爬取进度，每爬完一页自动刷新列表
+let refreshDebounceTimer = null
 watch(refreshCount, (newVal, oldVal) => {
-  console.log('[ComicList] refreshCount changed:', oldVal, '→', newVal, ', reloading list')
-  loadPage(1)
-  loadCategoryStats()
+  if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer)
+  refreshDebounceTimer = setTimeout(() => {
+    isLoading = false
+    loadPage(page.value)
+    loadCategoryStats()
+  }, 500)
 })
 
 // 双重保障：也监听 window 事件
 const onPageComplete = () => {
-  console.log('[ComicList] received crawler:page-complete event, reloading list')
-  loadPage(1)
+  isLoading = false
+  loadPage(page.value)
   loadCategoryStats()
 }
 window.addEventListener('crawler:page-complete', onPageComplete)
@@ -514,7 +558,7 @@ onMounted(async () => {
   if (catFromUrl && catFromUrl !== 'all') {
     activeCategory.value = catFromUrl
   }
-  await loadPage(1)
+  await loadPage(1, true)
   await loadCategoryStats()
   startProgressPolling()
   document.addEventListener('visibilitychange', onVisibilityChange)
@@ -522,6 +566,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopProgressPolling()
+  if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('crawler:page-complete', onPageComplete)
   window.removeEventListener('download:progress', onDownloadProgress)
@@ -656,29 +701,10 @@ onUnmounted(() => {
   box-shadow: var(--shadow-sm);
 }
 .crawl-status .progress-bar {
-  flex: 1; height: 8px;
-  position: relative;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--bg-hover);
-}
-.crawl-status .progress-bar .fill {
-  height: 100%;
-  background: var(--gradient-brand);
-  background-size: 20px 20px;
-  animation: progressStripes 1s linear infinite;
-}
-.crawl-status.is-checking .progress-bar .fill {
-  background: linear-gradient(135deg, #3b82f6, #2563eb);
-  background-size: 20px 20px;
-  animation: progressStripes 1s linear infinite;
+  flex: 1;
+  height: 8px;
 }
 .crawl-text { font-size: 12px; color: var(--text-sub); white-space: nowrap; }
-
-@keyframes progressStripes {
-  from { background-position: 20px 0; }
-  to   { background-position: 0 0; }
-}
 
 /* 空状态优化 - 番茄小说风格 */
 .empty-state {
@@ -765,22 +791,6 @@ onUnmounted(() => {
 
 .empty-actions .btn-secondary:hover {
   background: var(--bg-active);
-}
-
-@keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes pulse-soft {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.05); }
 }
 
 .comic-grid {

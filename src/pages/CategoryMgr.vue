@@ -7,8 +7,8 @@
         返回
       </button>
       <div class="header-titles">
-        <h1 class="page-title">分类管理</h1>
-        <p class="page-subtitle">查看和管理漫画分类</p>
+        <h1 class="page-title">TAG管理</h1>
+        <p class="page-subtitle">查看和管理漫画TAG</p>
       </div>
     </div>
 
@@ -20,11 +20,11 @@
       </div>
       <div class="stat-card accent">
         <div class="stat-value">{{ categoryCount }}</div>
-        <div class="stat-label">分类数量</div>
+        <div class="stat-label">TAG数量</div>
       </div>
       <div class="stat-card danger">
         <div class="stat-value">{{ untaggedCount }}</div>
-        <div class="stat-label">未分类</div>
+        <div class="stat-label">无TAG</div>
       </div>
     </div>
 
@@ -33,7 +33,7 @@
       <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
       <input
         v-model="searchQuery"
-        placeholder="搜索分类名称..."
+        placeholder="搜索TAG名称..."
         class="search-input"
       />
       <button v-if="searchQuery" class="search-clear" @click="searchQuery = ''">✕</button>
@@ -41,20 +41,20 @@
 
     <!-- 分类网格 -->
     <div class="section-header">
-      <span class="section-title">所有分类</span>
-      <span class="section-count">{{ filteredCategories.length }} 个分类</span>
+      <span class="section-title">所有TAG</span>
+      <span class="section-count">{{ filteredCategories.length }} 个TAG</span>
     </div>
 
     <div v-if="filteredCategories.length > 0" class="category-grid">
       <!-- 未分类卡片 -->
       <div
-        v-if="untaggedCount > 0 && (!searchQuery || '未分类'.includes(searchQuery))"
+        v-if="untaggedCount > 0 && (!searchQuery || '无TAG'.includes(searchQuery))"
         class="category-card untagged"
         @click="goToCategory('__untagged__')"
       >
         <div class="card-accent" :style="{ background: 'linear-gradient(135deg, #95a5a6, #7f8c8d)' }"></div>
         <div class="card-body">
-          <div class="card-name">未分类</div>
+          <div class="card-name">无TAG</div>
           <div class="card-count">{{ untaggedCount }} 本漫画</div>
         </div>
         <div class="card-icon">
@@ -85,8 +85,8 @@
         <div class="empty-icon">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
         </div>
-        <div class="empty-title">{{ searchQuery ? '没有匹配的分类' : '暂无分类数据' }}</div>
-        <div class="empty-sub">{{ searchQuery ? '尝试更换关键词搜索' : '漫画数据加载后可在此管理分类' }}</div>
+        <div class="empty-title">{{ searchQuery ? '没有匹配的TAG' : '暂无TAG数据' }}</div>
+        <div class="empty-sub">{{ searchQuery ? '尝试更换关键词搜索' : '漫画数据加载后可在此管理TAG' }}</div>
       </div>
   </div>
 </template>

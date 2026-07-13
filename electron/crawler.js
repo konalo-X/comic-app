@@ -4,154 +4,14 @@ const https = require('https')
 const http = require('http')
 const zlib = require('zlib')
 const cheerio = require('cheerio')
+const { sleep, randomUA } = require('./utils')
+const { getCookies, updateCookies } = require('./utils/cookieJar')
+const AdaptiveRequestPool = require('./adaptiveRequestPool')
+const SlidingCircuitBreaker = require('./utils/circuitBreaker')
 
-const RETRY_TIMES = 3  // 降低重试次数，失败快速跳过（5 → 3）
+const RETRY_TIMES = 3
 const PARSE_TIMEOUT = 90000
 const MAX_REDIRECTS = 5
-
-// ============ 并发池 ============
-class RequestPool {
-  constructor(concurrency = 10) {  // 提升默认并发数（5 → 10）
-    this.concurrency = concurrency
-    this.running = 0
-    this.queue = []
-    this.interval = null
-  }
-
-  async add(fn, label = '') {
-    return new Promise((resolve, reject) => {
-      this.queue.push({ fn, resolve, reject, label })
-      this._drain()
-    })
-  }
-
-  async _drain() {
-    if (this.running >= this.concurrency) return
-    if (this.queue.length === 0) return
-    this.running++
-    const item = this.queue.shift()
-    try {
-      const result = await item.fn()
-      item.resolve(result)
-    } catch (e) {
-      item.reject(e)
-    } finally {
-      this.running--
-      this._drain()
-    }
-  }
-
-  async waitIdle() {
-    while (this.running > 0 || this.queue.length > 0) {
-      await new Promise(r => setTimeout(r, 100))
-    }
-  }
-}
-
-// ============ UA / Cookie ============
-const UA_POOL = [
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-]
-
-function randomUA() { return UA_POOL[Math.floor(Math.random() * UA_POOL.length)] }
-function delay(ms) { return new Promise(r => setTimeout(r, ms)) }
-
-const cookieJar = new Map()
-
-function getCookies(hostname) {
-  const cookies = cookieJar.get(hostname) || []
-  return cookies.map(c => c.split(';')[0]).join('; ')
-}
-function updateCookies(hostname, setCookieStr) {
-  if (!setCookieStr) return
-  const headers = Array.isArray(setCookieStr) ? setCookieStr : [setCookieStr]
-  const existing = cookieJar.get(hostname) || []
-  for (const h of headers) {
-    const cookie = h.split(';')[0].trim()
-    if (!cookie) continue
-    const [name] = cookie.split('=')
-    const idx = existing.findIndex(c => c.startsWith(name + '='))
-    if (idx >= 0) existing[idx] = cookie
-    else existing.push(cookie)
-  }
-  cookieJar.set(hostname, existing)
-}
-
-// ============ 熔断器（滑动窗口）============
-class SlidingCircuitBreaker {
-  constructor(name, options = {}) {
-    this.name = name
-    this.windowMs = options.windowMs || 5 * 60 * 1000 // 5分钟
-    this.failThreshold = options.failThreshold || 0.5   // 失败率 > 50% 熔断
-    this.minSamples = options.minSamples || 10           // 最少样本
-    this.retryMs = options.retryMs || 10 * 60 * 1000     // 首次熔断10分钟
-    this.retryMsLong = options.retryMsLong || 60 * 60 * 1000 // 二次熔断1小时
-
-    this.records = []      // {time, ok}
-    this.tripped = false
-    this.trippedAt = 0
-    this.longTrip = false
-  }
-
-  _prune() {
-    const cutoff = Date.now() - this.windowMs
-    this.records = this.records.filter(r => r.time > cutoff)
-  }
-
-  record(ok) {
-    this.records.push({ time: Date.now(), ok })
-    this._prune()
-
-    // 每次记录成功时，如果处于熔断状态但重新计数足够，尝试恢复
-    if (ok && this.tripped) {
-      this._prune()
-      const total = this.records.length
-      const fails = this.records.filter(r => !r.ok).length
-      if (total >= this.minSamples && fails / total < this.failThreshold) {
-        this.tripped = false
-        this.longTrip = false
-        console.log(`[熔断] ${this.name} 已恢复`)
-      }
-    }
-  }
-
-  isOpen() {
-    if (!this.tripped) return false
-    // 检查是否到了重试时间
-    const waitMs = this.longTrip ? this.retryMsLong : this.retryMs
-    if (Date.now() - this.trippedAt > waitMs) {
-      this.tripped = false
-      this.longTrip = false
-      console.log(`[熔断] ${this.name} 尝试恢复`)
-      return false
-    }
-    return true
-  }
-
-  _checkTrip() {
-    this._prune()
-    const total = this.records.length
-    if (total < this.minSamples) return
-    const fails = this.records.filter(r => !r.ok).length
-    if (fails / total >= this.failThreshold) {
-      if (this.tripped) {
-        // 已经是熔断状态，考虑升级
-        this.longTrip = true
-      }
-      this.tripped = true
-      this.trippedAt = Date.now()
-      const waitMs = this.longTrip ? this.retryMsLong : this.retryMs
-      console.log(`[熔断] ${this.name} 触发！失败率 ${(fails/total*100).toFixed(0)}%，暂停 ${(waitMs/60000).toFixed(0)} 分钟`)
-    }
-  }
-
-  success() { this.record(true) }
-  failure() { this.record(false); this._checkTrip() }
-}
 
 // ============ HTTP 请求引擎 ============
 function fetchHtml(urlStr, opts = {}) {
@@ -257,12 +117,12 @@ async function asyncFetch(session, urlStr, referer = '') {
         // 服务器忙：指数退避，但上限更低（8秒）
         const delayMs = Math.min(1000 * Math.pow(1.5, retry), 8000) + Math.random() * 1000
         console.log(`[重试] ${urlStr} 第${retry + 1}次重试，延迟 ${Math.round(delayMs/1000)}秒`)
-        await delay(delayMs)
+        await sleep(delayMs)
       } else {
         // 其他错误：短延迟（0.5-1秒）
         const delayMs = 500 + Math.random() * 500
         console.log(`[重试] ${urlStr} 第${retry + 1}次重试，延迟 ${Math.round(delayMs)}ms`)
-        await delay(delayMs)
+        await sleep(delayMs)
       }
     }
   }
@@ -533,7 +393,7 @@ async function batchFetch(urls, concurrency = 5, delayMs = 1500, options = {}) {
     urls.forEach((_, i) => urlIndexMap[i] = i)
   }
   
-  const pool = new RequestPool(concurrency)
+  const pool = new AdaptiveRequestPool({ initialConcurrency: concurrency, maxConcurrency: concurrency })
   const results = []
 
   for (let i = 0; i < uniqueUrls.length; i++) {
@@ -541,7 +401,7 @@ async function batchFetch(urls, concurrency = 5, delayMs = 1500, options = {}) {
     const url = uniqueUrls[i]
     const p = pool.add(async () => {
       // 交错节流：每个请求之间至少 delayMs
-      await delay(delayMs + Math.random() * 1000)
+      await sleep(delayMs + Math.random() * 1000)
       return { idx, html: await asyncFetch(null, url) }
     }, `batch-${i}`)
     results.push(p)
@@ -569,11 +429,9 @@ module.exports = {
   parseNextPageUrl,
   parseChapterPage,
   parseChapterName,
-  delay,
   getMeta,
   absoluteUrl,
   batchFetch,
-  RequestPool,
   SlidingCircuitBreaker,
   get URLDeduplicator() {
     try {

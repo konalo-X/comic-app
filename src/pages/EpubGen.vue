@@ -95,7 +95,7 @@ v-for="comic in filteredComics" :key="comic.id"
         {{ generating ? '生成中...' : `生成 ${format.toUpperCase()}` }}
       </button>
       <div v-if="generating" class="progress-bar">
-        <div class="progress-fill" :style="{ width: progress + '%' }"></div>
+        <div class="fill" :style="{ width: progress + '%' }"></div>
         <span class="progress-text">{{ Math.round(progress) }}%</span>
       </div>
       <div v-if="resultMsg" :class="['result-msg', resultOk ? 'success' : 'error']">
@@ -320,8 +320,8 @@ h3 { font-size: 17px; font-weight: 600; margin-bottom: 16px; color: var(--text);
 .btn-generate:not(:disabled):hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4); }
 .btn-generate:disabled { opacity: .5; cursor: not-allowed; }
 
-.progress-bar { margin-top: 16px; height: 8px; background: var(--bg-hover); border-radius: 4px; overflow: hidden; position: relative; }
-.progress-fill { height: 100%; background: linear-gradient(90deg, var(--brand-start, #6366f1), var(--brand-end, #8b5cf6)); transition: width .3s ease; box-shadow: 0 0 8px rgba(99, 102, 241, 0.3); }
+.progress-bar { margin-top: 16px; height: 8px; border-radius: 4px; position: relative; }
+.progress-bar .fill { border-radius: 4px; }
 .progress-text { position: absolute; top: 14px; right: 0; font-size: 13px; font-weight: 600; color: var(--text-sub); }
 
 .result-msg { margin-top: 16px; padding: 14px 16px; border-radius: var(--radius-lg); font-size: 14px; }

@@ -81,7 +81,7 @@
               </div>
               <!-- 进度条 -->
               <div class="progress-bar">
-                <div class="progress-fill" :style="{ width: item.progressPercent + '%' }"></div>
+                <div class="fill" :style="{ width: item.progressPercent + '%' }"></div>
               </div>
               <div v-if="item.tags && item.tags.length" class="card-tags">
                 <span v-for="tag in item.tags.slice(0, 3)" :key="tag" class="tag">{{ tag }}</span>
@@ -667,17 +667,11 @@ function onImgError(e) {
 .progress-bar {
   width: 100%;
   height: 4px;
-  background: var(--bg-hover);
   border-radius: 2px;
-  overflow: hidden;
 }
 
-.progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--brand-start, #6366f1), var(--brand-end, #8b5cf6));
+.progress-bar .fill {
   border-radius: 2px;
-  transition: width 0.3s ease;
-  box-shadow: 0 0 6px rgba(99, 102, 241, 0.3);
 }
 
 .card-tags {

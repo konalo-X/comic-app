@@ -6,8 +6,8 @@
         返回
       </button>
       <div class="header-titles">
-        <h1 class="page-title">{{ activeTab === 'history' ? '下载历史' : '下载队列' }}</h1>
-        <p class="page-subtitle">{{ activeTab === 'history' ? '查看已完成的下载记录' : '管理正在下载和等待中的任务' }}</p>
+        <h1 class="page-title">{{ activeTab === 'history' ? '下载历史' : activeTab === 'health' ? '健康检查' : '下载队列' }}</h1>
+        <p class="page-subtitle">{{ activeTab === 'history' ? '查看已完成的下载记录' : activeTab === 'health' ? '检测并修复不完整的下载' : '管理正在下载和等待中的任务' }}</p>
       </div>
     </div>
 
@@ -36,6 +36,16 @@
         <span class="tab-label">下载历史</span>
         <span v-if="downloadGroups.length > 0" class="tab-badge">{{ downloadGroups.length }}</span>
       </button>
+      <button 
+        :class="['tab-item', { active: activeTab === 'health' }]" 
+        @click="activeTab = 'health'"
+      >
+        <svg class="tab-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+        </svg>
+        <span class="tab-label">健康检查</span>
+        <span v-if="healthIssues.length > 0" class="tab-badge">{{ healthIssues.length }}</span>
+      </button>
     </div>
 
     <!-- 队列 Tab -->
@@ -46,12 +56,14 @@
           <span class="tag tag-info">进行中 {{ downloading.length }} · 等待 {{ queued.length }}</span>
         </div>
         <div class="row gap-8">
+          <button class="btn btn-ghost btn-sm" @click="debugJobs">🔍 调试</button>
+          <button class="btn btn-ghost btn-sm" @click="cleanupDuplicates">🧹 清理重复</button>
           <button class="btn btn-secondary btn-sm" @click="pauseAll">⏸ 全部暂停</button>
           <button class="btn btn-primary btn-sm" @click="startAll">▶ 全部开始</button>
         </div>
       </div>
 
-      <div class="card queue-card">
+      <div class="card queue-card water-ripple">
         <div v-for="t in tasks" :key="t.id" class="task-row">
           <div class="task-info">
             <div class="task-title">{{ t.comic }} · {{ t.chapter }}</div>
@@ -100,7 +112,7 @@
         <div class="empty-desc">下载完成的漫画会显示在这里</div>
       </div>
 
-      <div v-for="group in downloadGroups" :key="group.title" class="card card-hover" style="padding: 16px; margin-bottom: 16px;">
+      <div v-for="group in downloadGroups" :key="group.title" class="card card-hover water-ripple" style="padding: 16px; margin-bottom: 16px;">
         <div class="row between" style="margin-bottom: 12px;">
           <div class="row gap-12">
             <h3 style="font-size: 15px; font-weight: 600;">{{ group.title }}</h3>
@@ -120,6 +132,105 @@
 
         <div v-if="exporting === group.title" class="mt-8 text-accent" style="font-size: 12px;">
           正在导出 {{ group.title }}.{{ formatExport }}
+        </div>
+      </div>
+    </div>
+
+    <!-- 健康检查 Tab -->
+    <div v-show="activeTab === 'health'" class="download-health">
+      <div class="section-header">
+        <div class="row gap-12">
+          <h2>🩺 健康检查</h2>
+          <span v-if="healthIssues.length > 0" class="tag tag-warning">{{ healthIssues.length }} 部漫画有问题</span>
+          <span v-else-if="healthScanDone && healthIssues.length === 0" class="tag tag-success">所有漫画健康</span>
+        </div>
+        <div class="row gap-8">
+          <button class="btn btn-ghost btn-sm" :disabled="healthScanning" @click="scanHealth(false)">
+            {{ healthScanning ? '扫描中...' : '🔍 快速扫描' }}
+          </button>
+          <button class="btn btn-ghost btn-sm" :disabled="healthScanning" @click="scanHealth(true)">
+            {{ healthScanning ? '扫描中...' : '🔬 深度扫描' }}
+          </button>
+          <button class="btn btn-primary btn-sm" :disabled="healthScanning || healthIssues.length === 0" @click="repairAll">
+            🔧 修复全部
+          </button>
+        </div>
+      </div>
+
+      <div v-if="healthScanning" class="health-scanning">
+        <div class="scanning-indicator">
+          <div class="scanning-spinner"></div>
+          <span>正在扫描已下载漫画...</span>
+        </div>
+      </div>
+
+      <div v-if="!healthScanning && !healthScanDone" class="empty-state">
+        <div class="empty-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        </div>
+        <div class="empty-title">点击扫描检查漫画完整性</div>
+        <div class="empty-desc">快速扫描检测损坏和缺失文件，深度扫描额外比对在线图片数</div>
+      </div>
+
+      <div v-if="!healthScanning && healthScanDone && healthIssues.length === 0" class="empty-state">
+        <div class="empty-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        </div>
+        <div class="empty-title">所有漫画健康</div>
+        <div class="empty-desc">未检测到损坏或缺失的图片</div>
+      </div>
+
+      <div v-for="issue in healthIssues" :key="issue.comicDir" class="card card-hover health-issue-card water-ripple">
+        <div class="row between" style="margin-bottom: 10px;">
+          <div class="row gap-12">
+            <h3 style="font-size: 15px; font-weight: 600;">{{ issue.dirName }}</h3>
+            <span class="tag tag-warning">{{ issue.totalIssues }} 个问题</span>
+            <span class="tag tag-default">{{ issue.totalChapters }} 章</span>
+          </div>
+          <div class="row gap-8">
+            <button class="btn btn-ghost btn-sm" title="打开文件夹" @click="openFolder(issue.comicDir)">打开</button>
+            <button class="btn btn-primary btn-sm" :disabled="issue.repairing" @click="repairOne(issue)">
+              {{ issue.repairing ? '修复中...' : '🔧 修复' }}
+            </button>
+          </div>
+        </div>
+
+        <div class="issue-chapters">
+          <div v-if="issue.missingCover" class="issue-chapter">
+            <div class="row gap-8">
+              <span class="chapter-name">📔 cover.webp</span>
+              <span class="tag tag-warning">缺失封面</span>
+            </div>
+          </div>
+          <div v-for="ch in issue.chapters.filter(c => !c.healthy)" :key="ch.dirName" class="issue-chapter">
+            <div class="row gap-8">
+              <span class="chapter-name">{{ ch.dirName }}</span>
+              <span v-for="i in ch.issues" :key="i.message" :class="['tag', issueTagClass(i.type)]">{{ i.message }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="issue.repairResult" class="repair-result" :class="{ 'repair-success': issue.repairResult.success, 'repair-fail': !issue.repairResult.success }">
+          {{ issue.repairResult.success ? `修复完成: ${issue.repairResult.repairedChapters} 章, 补下 ${issue.repairResult.totalImagesFixed} 张图片` : `修复失败: ${issue.repairResult.error}` }}
+        </div>
+      </div>
+
+      <div v-if="repairJobs.length > 0" class="repair-jobs-section">
+        <div class="section-header" style="margin-top: 20px;">
+          <div class="row gap-12">
+            <h2>🔧 修复任务</h2>
+            <span class="tag tag-info">{{ repairJobs.length }} 个任务</span>
+          </div>
+        </div>
+        <div v-for="rj in repairJobs" :key="rj.jobId" class="card repair-job-card">
+          <div class="row between">
+            <div>
+              <span class="text-sub">{{ rj.comicTitle }}</span>
+              <span :class="['tag', rj.status === 'completed' ? 'tag-success' : rj.status === 'failed' ? 'tag-danger' : 'tag-info']" style="margin-left: 8px;">
+                {{ rj.status === 'completed' ? '已完成' : rj.status === 'failed' ? '失败' : rj.status === 'running' || rj.status === 'active' ? '修复中' : '等待中' }}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -152,56 +263,146 @@ const tasks = ref([])
 const downloading = computed(() => tasks.value.filter(t => t.status === 'downloading'))
 const queued = computed(() => tasks.value.filter(t => t.status === 'queued'))
 
-function pct(t) { return t.total ? Math.round((t.done / t.total) * 100) : 0 }
+const healthIssues = ref([])
+const healthScanning = ref(false)
+const healthScanDone = ref(false)
+const repairJobs = ref([])
+
+function issueTagClass(type) {
+  const map = { corrupt: 'tag-danger', empty_file: 'tag-danger', empty: 'tag-danger', gap: 'tag-warning', incomplete: 'tag-warning' }
+  return map[type] || 'tag-default'
+}
+
+async function scanHealth(deepCheck) {
+  healthScanning.value = true
+  healthScanDone.value = false
+  try {
+    const result = await window.offlineApi?.checkAllHealth?.({ limit: 200, deepCheck: !!deepCheck })
+    if (result?.success) {
+      healthIssues.value = (result.issues || []).map(issue => ({
+        ...issue,
+        repairing: false,
+        repairResult: null
+      }))
+    } else {
+      healthIssues.value = []
+    }
+    healthScanDone.value = true
+  } catch (e) {
+    console.error('[健康检查] 扫描失败:', e)
+    window.dispatchEvent(new CustomEvent('toast', { detail: `扫描失败: ${e.message}` }))
+  } finally {
+    healthScanning.value = false
+  }
+}
+
+async function repairOne(issue) {
+  if (!issue.sourceUrl) {
+    window.dispatchEvent(new CustomEvent('toast', { detail: '无法修复: 缺少漫画源信息' }))
+    return
+  }
+  issue.repairing = true
+  issue.repairResult = null
+  try {
+    const result = await window.offlineApi?.repairComic?.({ sourceUrl: issue.sourceUrl, deepCheck: false })
+    if (result?.success) {
+      issue.repairResult = { success: true, repairedChapters: '已加入队列', totalImagesFixed: 0 }
+      repairJobs.value.push({ jobId: result.jobId, comicTitle: issue.dirName, status: 'waiting' })
+      window.dispatchEvent(new CustomEvent('toast', { detail: `已创建修复任务: ${issue.dirName}` }))
+    } else {
+      issue.repairResult = { success: false, error: result?.error || '未知错误' }
+    }
+  } catch (e) {
+    issue.repairResult = { success: false, error: e.message }
+  } finally {
+    issue.repairing = false
+  }
+}
+
+async function repairAll() {
+  try {
+    const result = await window.offlineApi?.repairAll?.({ deepCheck: false })
+    if (result?.success) {
+      window.dispatchEvent(new CustomEvent('toast', { detail: `已创建 ${result.enqueued} 个修复任务` }))
+      healthIssues.value.forEach(issue => { issue.repairing = true })
+    } else {
+      window.dispatchEvent(new CustomEvent('toast', { detail: `修复失败: ${result?.error || '未知错误'}` }))
+    }
+  } catch (e) {
+    window.dispatchEvent(new CustomEvent('toast', { detail: `修复失败: ${e.message}` }))
+  }
+}
+
+function pct(t) { return t.total ? Math.min(100, Math.round((t.done / t.total) * 100)) : 0 }
 function statusCls(t) { return { done: 'text-success', downloading: 'text-brand', queued: 'text-dim', paused: 'text-warning' }[t.status] || '' }
 
-function pauseAll() {
-  tasks.value.forEach(t => {
+async function pauseAll() {
+  for (const t of tasks.value) {
     if (t.status === 'downloading') {
-      t.status = 'paused'
-      t.statusText = '暂停中'
-      if (t.jobId && window.jobApi) {
-        window.jobApi.cancel(t.jobId)
+      try {
+        if (t.jobId && window.offlineApi) {
+          await window.offlineApi.pauseJob(t.jobId)
+        }
+        t.status = 'paused'
+        t.statusText = '暂停中'
+      } catch (e) {
+        console.error('[暂停] 失败:', t.jobId, e)
       }
     }
-  })
+  }
 }
 
-function startAll() {
-  tasks.value.forEach(t => {
+async function startAll() {
+  for (const t of tasks.value) {
     if (t.status === 'paused' || t.status === 'queued') {
-      t.status = 'downloading'
-      t.statusText = '下载中'
-      if (t.jobId && window.jobApi) {
-        window.jobApi.retry(t.jobId)
+      try {
+        if (t.jobId && window.offlineApi) {
+          await window.offlineApi.resumeJob(t.jobId)
+        }
+        t.status = 'downloading'
+        t.statusText = '下载中'
+      } catch (e) {
+        console.error('[恢复] 失败:', t.jobId, e)
       }
     }
-  })
+  }
 }
 
-function pauseTask(task) {
+async function pauseTask(task) {
   if (task.status === 'downloading') {
-    task.status = 'paused'
-    task.statusText = '暂停中'
-    if (task.jobId && window.jobApi) {
-      window.jobApi.cancel(task.jobId)
+    try {
+      if (task.jobId && window.offlineApi) {
+        await window.offlineApi.pauseJob(task.jobId)
+      }
+      task.status = 'paused'
+      task.statusText = '暂停中'
+    } catch (e) {
+      console.error('[暂停] 失败:', task.jobId, e)
     }
   }
 }
 
-function resumeTask(task) {
+async function resumeTask(task) {
   if (task.status === 'paused' || task.status === 'queued') {
-    task.status = 'downloading'
-    task.statusText = '下载中'
-    if (task.jobId && window.jobApi) {
-      window.jobApi.retry(task.jobId)
+    try {
+      if (task.jobId && window.offlineApi) {
+        await window.offlineApi.resumeJob(task.jobId)
+      }
+      task.status = 'downloading'
+      task.statusText = '下载中'
+    } catch (e) {
+      console.error('[恢复] 失败:', task.jobId, e)
     }
   }
 }
 
-function removeTask(task) {
-  if (task.jobId && window.jobApi) {
-    window.jobApi.cancel(task.jobId)
+async function removeTask(task) {
+  try {
+    if (task.jobId && window.jobApi) {
+      await window.jobApi.cancel(task.jobId)
+    }
+  } catch (e) {
+    console.error('[移除] 取消失败:', task.jobId, e)
   }
   tasks.value = tasks.value.filter(t => t.id !== task.id)
 }
@@ -219,10 +420,28 @@ const formatExport = ref('epub')
 
 let cleanupProgress = null
 let cleanupDone = null
+let refreshTimer = null
+let cleanupQueueChanged = null
 
 onMounted(async () => {
   await loadRecords()
   await loadJobs()
+
+  // 事件驱动刷新：任务队列变化时即时刷新
+  if (window.jobApi?.onQueueChanged) {
+    cleanupQueueChanged = window.jobApi.onQueueChanged(() => {
+      if (activeTab.value === 'queue') {
+        loadJobs()
+      }
+    })
+  }
+
+  // 兜底轮询：每 30 秒刷新一次，防止事件丢失
+  refreshTimer = setInterval(() => {
+    if (activeTab.value === 'queue') {
+      loadJobs()
+    }
+  }, 30000)
 
   if (window.offlineApi?.onJobProgress) {
     cleanupProgress = window.offlineApi.onJobProgress((data) => {
@@ -259,23 +478,90 @@ onMounted(async () => {
 onUnmounted(() => {
   if (cleanupProgress) cleanupProgress()
   if (cleanupDone) cleanupDone()
+  if (cleanupQueueChanged) cleanupQueueChanged()
+  if (refreshTimer) clearInterval(refreshTimer)
 })
+
+function getComicDisplayName(payload) {
+  if (payload?.comicTitle) return payload.comicTitle
+  // 尝试从 sourceUrl 提取漫画名
+  if (payload?.sourceUrl) {
+    try {
+      const url = new URL(payload.sourceUrl)
+      const pathParts = url.pathname.split('/').filter(Boolean)
+      const lastPart = pathParts[pathParts.length - 1]
+      if (lastPart) return `漫画(${lastPart})`
+    } catch (_) {}
+  }
+  // 尝试从 chapter.url 提取
+  if (payload?.chapter?.url) {
+    try {
+      const url = new URL(payload.chapter.url)
+      const pathParts = url.pathname.split('/').filter(Boolean)
+      const comicPart = pathParts[pathParts.length - 2]
+      if (comicPart) return `漫画(${comicPart})`
+    } catch (_) {}
+  }
+  // 尝试从 referer 提取
+  if (payload?.referer) {
+    try {
+      const url = new URL(payload.referer)
+      const pathParts = url.pathname.split('/').filter(Boolean)
+      const lastPart = pathParts[pathParts.length - 1]
+      if (lastPart) return `漫画(${lastPart})`
+    } catch (_) {}
+  }
+  return '未知漫画'
+}
+
+function getChapterDisplayName(payload, isComic) {
+  if (isComic) {
+    const count = payload?.chapters?.length || 0
+    return count > 0 ? `${count}个章节` : '整本下载'
+  }
+  if (payload?.chapter?.name) return payload.chapter.name
+  if (payload?.chapter?.index !== undefined) return `第${payload.chapter.index + 1}章`
+  // 尝试从 chapter.url 提取章节信息
+  if (payload?.chapter?.url) {
+    try {
+      const url = new URL(payload.chapter.url)
+      const pathParts = url.pathname.split('/').filter(Boolean)
+      const lastPart = pathParts[pathParts.length - 1]
+      if (lastPart) return `章节(${lastPart.substring(0, 20)})`
+    } catch (_) {}
+  }
+  return '未知章节'
+}
 
 async function loadJobs() {
   try {
-    const jobs = await window.jobApi?.list('active', 20) || []
-    tasks.value = jobs.map(j => {
+    // 查询所有活跃状态的任务（waiting + running + paused）
+    const jobs = await window.jobApi?.list('active', 500) || []
+    // 只显示下载相关的任务
+    const downloadJobs = jobs.filter(j =>
+      (j.type === 'downloadComic' || j.type === 'downloadChapter')
+    )
+    tasks.value = downloadJobs.map(j => {
       const isComic = j.type === 'downloadComic'
+      let status = 'queued'
+      let statusText = '等待中'
+      if (j.status === 'running' || j.status === 'active') {
+        status = 'downloading'
+        statusText = '下载中'
+      } else if (j.status === 'paused') {
+        status = 'paused'
+        statusText = '暂停中'
+      }
       return {
         id: j.id,
         jobId: j.id,
-        comic: isComic ? (j.payload?.comicTitle || '未知漫画') : (j.payload?.comicTitle || '未知漫画'),
-        chapter: isComic ? (j.payload?.chapters?.length + '个章节') : (j.payload?.chapter?.name || '未知章节'),
-        done: isComic ? (j.progress?.chapter || 0) : (j.progress?.downloaded || j.progress?.current || 0),
-        total: isComic ? (j.progress?.totalChapters || 1) : (j.progress?.total || 1),
+        comic: getComicDisplayName(j.payload),
+        chapter: getChapterDisplayName(j.payload, isComic),
+        done: isComic ? (j.progress?.chapter != null ? j.progress.chapter : (j.progressCurrent || 0)) : (j.progress?.downloaded != null ? j.progress.downloaded : (j.progressCurrent || 0)),
+        total: isComic ? (j.progress?.totalChapters != null ? j.progress.totalChapters : (j.progressTotal || (j.payload?.chapters?.length || 1))) : (j.progress?.total != null ? j.progress.total : (j.progressTotal || 1)),
         _unit: isComic ? '章' : '页',
-        status: j.status === 'running' ? 'downloading' : 'queued',
-        statusText: j.status === 'running' ? '下载中' : '等待中'
+        status,
+        statusText
       }
     })
   } catch (e) {
@@ -318,6 +604,30 @@ async function exportComic(title, format) {
     exporting.value = ''
   }
 }
+
+async function debugJobs() {
+  try {
+    const details = await window.jobApi?.getJobDetails?.()
+    console.log('[调试] 任务详情:', details)
+    alert('任务详情已输出到 Console，请按 Cmd+Option+I 查看')
+  } catch (e) {
+    console.error('[调试] 获取失败:', e)
+  }
+}
+
+async function cleanupDuplicates() {
+  try {
+    const results = []
+    const r1 = await window.jobApi?.cleanupDuplicateSyncs?.()
+    if (r1) results.push(`Sync: ${r1.cancelled} 个重复已取消 (共 ${r1.total} 个)`)
+    const r2 = await window.jobApi?.cleanupDuplicateDownloads?.()
+    if (r2) results.push(`下载: ${r2.cancelled} 个重复已取消 (共 ${r2.total} 个)`)
+    alert(results.length ? results.join('\n') : '没有重复任务')
+  } catch (e) {
+    console.error('[清理] 失败:', e)
+    alert('清理失败: ' + e.message)
+  }
+}
 </script>
 
 <style scoped>
@@ -357,7 +667,7 @@ async function exportComic(title, format) {
 .task-info { flex: 1; min-width: 0; }
 .task-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .task-meta { font-size: 11px; }
-.task-progress { max-width: 220px; flex: 1; }
+.task-progress { max-width: 220px; flex: 1; height: 8px; }
 .task-progress .fill {
   border-radius: 999px;
 }
@@ -510,5 +820,82 @@ async function exportComic(title, format) {
     gap: 12px;
   }
   .page-title { font-size: 20px; }
+}
+
+.health-issue-card {
+  padding: 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255,255,255,0.75);
+  box-shadow: var(--shadow-sm);
+  background: rgba(255,255,255,0.88);
+  backdrop-filter: blur(14px);
+  margin-bottom: 16px;
+}
+.health-issue-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+.issue-chapters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.issue-chapter {
+  padding: 6px 10px;
+  background: rgba(0,0,0,0.03);
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+.chapter-name {
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+.repair-result {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 500;
+}
+.repair-success {
+  background: rgba(52, 199, 89, 0.1);
+  color: #34c759;
+}
+.repair-fail {
+  background: rgba(255, 59, 48, 0.1);
+  color: #ff3b30;
+}
+.health-scanning {
+  padding: 40px 0;
+  text-align: center;
+}
+.scanning-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-sub);
+  font-size: 14px;
+}
+.scanning-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(255,95,80,0.2);
+  border-top-color: var(--brand, #ff5f50);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.repair-job-card {
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.download-health {
+  animation: fadeIn 0.2s ease;
 }
 </style>

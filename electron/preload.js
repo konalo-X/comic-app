@@ -1,5 +1,23 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
+// 捕获前端错误并转发到主进程
+window.addEventListener('error', (event) => {
+  ipcRenderer.send('renderer:error', {
+    message: event.error?.message || event.message,
+    stack: event.error?.stack,
+    filename: event.filename,
+    lineno: event.lineno
+  })
+})
+
+window.addEventListener('unhandledrejection', (event) => {
+  ipcRenderer.send('renderer:error', {
+    message: event.reason?.message || String(event.reason),
+    stack: event.reason?.stack,
+    type: 'unhandledrejection'
+  })
+})
+
 contextBridge.exposeInMainWorld('windowApi', {
   minimize: () => ipcRenderer.invoke('app:minimize'),
   maximize: () => ipcRenderer.invoke('app:maximize'),
@@ -39,7 +57,15 @@ contextBridge.exposeInMainWorld('jobApi', {
   list: (status, limit) => ipcRenderer.invoke('job:list', status || 'all', limit || 50),
   stats: () => ipcRenderer.invoke('job:stats'),
   get: (id) => ipcRenderer.invoke('job:get', id),
-  failureStats: () => ipcRenderer.invoke('job:failureStats')  // 新增：获取失败统计
+  failureStats: () => ipcRenderer.invoke('job:failureStats'),
+  getJobDetails: () => ipcRenderer.invoke('debug:getJobDetails'),
+  cleanupDuplicateSyncs: () => ipcRenderer.invoke('job:cleanupDuplicateSyncs'),
+  cleanupDuplicateDownloads: () => ipcRenderer.invoke('job:cleanupDuplicateDownloads'),
+  onQueueChanged: (cb) => {
+    const handler = (_, data) => cb(data)
+    ipcRenderer.on('jobQueue:changed', handler)
+    return () => ipcRenderer.removeListener('jobQueue:changed', handler)
+  }
 })
 
 // ============ 导出 API ============
@@ -53,41 +79,22 @@ contextBridge.exposeInMainWorld('exportApi', {
 })
 
 // ============ 工具函数 API ============
-// 将本地文件路径转换为图片代理 URL（Vue 前端无法直接加载 file://）
-// 与 main.js 中的 getLocalProxyUrl() 保持一致
-const _PROXY_BASE = 'http://127.0.0.1:48123'
-function _toLocalUrl(filePath) {
-  if (!filePath) return ''
-  const cleanPath = String(filePath).replace(/^file:\/\//, '')
-  const encoded = Buffer.from(cleanPath).toString('base64')
-  return `${_PROXY_BASE}/local?p=${encodeURIComponent(encoded)}`
-}
-// 将在线图片 URL 通过代理加载（解决防盗链）
-function _toProxyUrl(imageUrl, referer) {
-  if (!imageUrl) return ''
-  const encodedUrl = Buffer.from(imageUrl).toString('base64')
-  const encodedRef = Buffer.from(referer || imageUrl).toString('base64')
-  return `${_PROXY_BASE}/img?u=${encodeURIComponent(encodedUrl)}&r=${encodeURIComponent(encodedRef)}`
-}
-// 从 Vue 响应式对象中提取纯数据（避免 IPC 结构化克隆失败）
-function _toPlain(obj) {
-  if (obj === null || obj === undefined) return obj
-  if (Array.isArray(obj)) return obj.map(_toPlain)
-  if (typeof obj === 'object') {
-    const plain = {}
-    for (const k of Object.keys(obj)) {
-      const v = obj[k]
-      if (typeof v === 'function') continue
-      plain[k] = _toPlain(v)
-    }
-    return plain
+const path = require('path')
+const { getLocalProxyUrl, getProxyImageUrl, toPlain, setProxyPort } = require(path.join(__dirname, 'utils', 'proxyUrl'))
+
+try {
+  const actualPort = ipcRenderer.sendSync('proxy:getPort')
+  if (actualPort && actualPort !== 48123) {
+    setProxyPort(actualPort)
   }
-  return obj
+} catch (e) {
+  console.warn('[Preload] 获取代理端口失败:', e.message)
 }
+
 contextBridge.exposeInMainWorld('utils', {
-  toLocalUrl: _toLocalUrl,
-  toProxyUrl: _toProxyUrl,
-  toPlain: _toPlain
+  toLocalUrl: getLocalProxyUrl,
+  toProxyUrl: getProxyImageUrl,
+  toPlain
 })
 
 // ============ 旧兼容层（保持既有前端代码可用）============
@@ -128,16 +135,16 @@ contextBridge.exposeInMainWorld('crawlerApi', {
     ipcRenderer.on('update:done', handler)
     return () => ipcRenderer.removeListener('update:done', handler)
   },
-  enrichChapterNames: () => ipcRenderer.invoke('crawl:enrichChapterNames'),
-  onEnrichChapterNamesProgress: (cb) => {
+  enrichChapters: () => ipcRenderer.invoke('crawl:enrichChapters'),
+  onEnrichChaptersProgress: (cb) => {
     const handler = (_, data) => cb(data)
-    ipcRenderer.on('enrichChapterNames:progress', handler)
-    return () => ipcRenderer.removeListener('enrichChapterNames:progress', handler)
+    ipcRenderer.on('enrichChapters:progress', handler)
+    return () => ipcRenderer.removeListener('enrichChapters:progress', handler)
   },
-  onEnrichChapterNamesDone: (cb) => {
+  onEnrichChaptersDone: (cb) => {
     const handler = (_, data) => cb(data)
-    ipcRenderer.on('enrichChapterNames:done', handler)
-    return () => ipcRenderer.removeListener('enrichChapterNames:done', handler)
+    ipcRenderer.on('enrichChapters:done', handler)
+    return () => ipcRenderer.removeListener('enrichChapters:done', handler)
   }
 })
 
@@ -276,7 +283,12 @@ contextBridge.exposeInMainWorld('offlineApi', {
     const handler = (_, data) => cb(data)
     ipcRenderer.on('download:jobDone', handler)
     return () => ipcRenderer.removeListener('download:jobDone', handler)
-  }
+  },
+  checkHealth: (opts) => ipcRenderer.invoke('download:checkHealth', opts),
+  checkAllHealth: (opts) => ipcRenderer.invoke('download:checkAllHealth', opts),
+  repairChapter: (opts) => ipcRenderer.invoke('download:repairChapter', opts),
+  repairComic: (opts) => ipcRenderer.invoke('download:repairComic', opts),
+  repairAll: (opts) => ipcRenderer.invoke('download:repairAll', opts)
 })
 
 // ============ 后台任务状态 API ============
