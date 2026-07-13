@@ -80,6 +80,27 @@ app.on('second-instance', (event, argv, workingDirectory) => {
 app.on('before-quit', () => { _clearLock() })
 process.on('exit', () => { _clearLock() })
 
+// ============ 崩溃兜底 ============
+// 未捕获异常/未处理 rejection: 记日志 + 清锁 + 退出。
+// 不"只记日志不退出"——今天的教训是那样会变成永久僵尸(事件循环假死时没人能救)。
+// 退出后由用户重新启动 app(本就与 app 一体, 无外部守护), 清锁保证下次能正常起。
+const _crashLog = path.join(app.getPath('userData'), 'crash.log')
+function _logCrash(tag, err) {
+  const msg = `[${new Date().toISOString()}] ${tag}: ${(err && err.stack) || err}\n`
+  console.error(msg)
+  try { require('fs').appendFileSync(_crashLog, msg) } catch (_) {}
+}
+process.on('uncaughtException', (err) => {
+  _logCrash('uncaughtException', err)
+  _clearLock()
+  process.exit(1)
+})
+process.on('unhandledRejection', (reason) => {
+  _logCrash('unhandledRejection', reason)
+  _clearLock()
+  process.exit(1)
+})
+
 const sources = require('./sources/registry')
 const db = require('./db')
 const exporter = require('./exporter')
