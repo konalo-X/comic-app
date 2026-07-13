@@ -86,7 +86,7 @@ ref="contentRef"
           @touchmove="onCanvasTouchMoveZoom"
           @touchend="onCanvasTouchEndZoom"
         ></canvas>
-        <div class="canvas-page-info">第 {{ currentImageIndex + 1 }} 页 / 共 {{ images.length }} 页</div>
+        <div v-if="readerSettings.showPageNumber" class="canvas-page-info">第 {{ currentImageIndex + 1 }} 页 / 共 {{ images.length }} 页</div>
       </div>
 
       <!-- ===== 单页模式（DOM 渲染） ===== -->
@@ -96,7 +96,7 @@ ref="contentRef"
           <div v-for="p in singlePages" :key="p.key" class="page-flip-wrapper">
             <transition :name="pageEffect" mode="out-in">
               <div v-if="p.src" :key="p.src" class="single-page-container">
-                <div class="page-label-top">第 {{ p.idx + 1 }} 页 / 共 {{ images.length }} 页</div>
+              <div v-if="readerSettings.showPageNumber" class="page-label-top">第 {{ p.idx + 1 }} 页 / 共 {{ images.length }} 页</div>
                 <img
                   :src="loadedImages[p.idx] === 'error' ? errorImg : p.src"
                   :alt="`第${p.idx + 1}页`"
@@ -119,7 +119,7 @@ ref="contentRef"
         <div class="page-left">
           <transition :name="pageEffect" mode="out-in">
             <div v-if="doubleLeft.src" :key="doubleLeft.src" class="double-page-container">
-              <div class="page-label-top">第 {{ doubleLeft.idx + 1 }} 页</div>
+              <div v-if="readerSettings.showPageNumber" class="page-label-top">第 {{ doubleLeft.idx + 1 }} 页</div>
               <img
                 :src="loadedImages[doubleLeft.idx] === 'error' ? errorImg : doubleLeft.src"
                 :alt="`第${doubleLeft.idx + 1}页`"
@@ -138,7 +138,7 @@ ref="contentRef"
         <div class="page-right">
           <transition :name="pageEffect" mode="out-in">
             <div v-if="doubleRight.src && !doubleRight.dummy" :key="doubleRight.src" class="double-page-container">
-              <div class="page-label-top">第 {{ doubleRight.idx + 1 }} 页</div>
+              <div v-if="readerSettings.showPageNumber" class="page-label-top">第 {{ doubleRight.idx + 1 }} 页</div>
               <img
                 :src="loadedImages[doubleRight.idx] === 'error' ? errorImg : doubleRight.src"
                 :alt="`第${doubleRight.idx + 1}页`"
@@ -166,7 +166,7 @@ v-else-if="doubleRight.dummy"
       <div v-else-if="mode === 'scroll'" ref="scrollRef" class="scroll-mode" @scroll="onScroll">
         <div class="scroll-images">
           <div v-for="(img, idx) in images" :key="idx" class="scroll-page">
-            <div class="page-number">{{ idx + 1 }} / {{ images.length }}</div>
+            <div v-if="readerSettings.showPageNumber" class="page-number">{{ idx + 1 }} / {{ images.length }}</div>
             <img
               :src="loadedImages[idx] === 'error' ? errorImg : img"
               :alt="`第${idx + 1}页`"
@@ -281,6 +281,13 @@ let hideTimer = null
 let touchStartX = 0
 let touchStartTime = 0
 
+// ===== 从 settings.json 恢复阅读偏好 =====
+const readerSettings = ref({
+  autoPreload: true,
+  doubleTapZoom: true,
+  showPageNumber: true
+})
+
 // ===== 从 localStorage 恢复阅读器设置 + 加载漫画 =====
 onMounted(async () => {
   const saved = localStorage.getItem('reader_settings')
@@ -291,6 +298,15 @@ onMounted(async () => {
       pageEffect.value = s.effect || 'fade'
     } catch {}
   }
+
+  try {
+    const s = await window.settingsApi?.get?.()
+    if (s) {
+      readerSettings.value.autoPreload = typeof s.autoPreload === 'boolean' ? s.autoPreload : true
+      readerSettings.value.doubleTapZoom = typeof s.doubleTapZoom === 'boolean' ? s.doubleTapZoom : true
+      readerSettings.value.showPageNumber = typeof s.showPageNumber === 'boolean' ? s.showPageNumber : true
+    }
+  } catch {}
   setupIntersectionObserver()
 
   const comicId = route.params.comicId
@@ -462,8 +478,7 @@ function nextPage() {
     if (currentPage.value < images.value.length - 1) {
       currentPage.value++
       saveProgress()
-      // 预加载当前章后续图片
-      preloadCurrentChapterAhead()
+      if (readerSettings.value.autoPreload) preloadCurrentChapterAhead()
     } else if (chapterIndex.value < chapters.value.length - 1) {
       nextChapter()
     }
@@ -472,8 +487,7 @@ function nextPage() {
     if (currentPage.value + 2 < images.value.length) {
       currentPage.value += 2
       saveProgress()
-      // 预加载当前章后续图片
-      preloadCurrentChapterAhead()
+      if (readerSettings.value.autoPreload) preloadCurrentChapterAhead()
     } else if (chapterIndex.value < chapters.value.length - 1) {
       nextChapter()
     }
@@ -970,7 +984,7 @@ async function loadChapter() {
   } catch {}
 
   if (cacheHits.value === 0) {
-    preloadNextChapter()
+    if (readerSettings.value.autoPreload) preloadNextChapter()
   }
 
   rebindLazyLoad()
@@ -1251,6 +1265,7 @@ function onCanvasMouseUp() {
 
 // 双击重置缩放
 function onCanvasDblClick(e) {
+  if (!readerSettings.value.doubleTapZoom) return
   e.preventDefault()
   zoomScale.value = 1.0
   zoomOffsetX.value = 0

@@ -159,7 +159,7 @@ const selectedChapterCount = computed(() => Math.max(0, rangeEnd.value - rangeSt
 
 const volumeCount = computed(() => {
   if (volumeMode.value === 'single') return 1
-  const perVol = volumeMode.value === 'auto' ? 50 : (chaptersPerVolume.value || 50)
+  const perVol = chaptersPerVolume.value || 100
   return Math.ceil(selectedChapterCount.value / perVol)
 })
 
@@ -193,6 +193,16 @@ async function loadData() {
       return true
     })
   } catch (e) { console.warn('history fail', e) }
+
+  try {
+    const saved = await window.settingsApi?.get()
+    if (saved) {
+      if (saved.epubVolumeMode) volumeMode.value = saved.epubVolumeMode
+      if (saved.epubChaptersPerVolume) chaptersPerVolume.value = saved.epubChaptersPerVolume
+      if (saved.epubImageQuality) imageQuality.value = saved.epubImageQuality
+      if (typeof saved.epubIncludeMeta === 'boolean') includeMeta.value = saved.epubIncludeMeta
+    }
+  } catch (e) { console.warn('load settings fail', e) }
 
   // 如果从漫画详情页跳转过来，自动选择该漫画
   const comicId = route.query.comicId
@@ -236,7 +246,7 @@ async function startConvert() {
         name: ch.name || ch.title || `第${rangeStart.value + i + 1}章`
       })),
       volumeMode: volumeMode.value,
-      chaptersPerVolume: volumeMode.value === 'custom' ? chaptersPerVolume.value : (volumeMode.value === 'auto' ? 50 : undefined),
+      chaptersPerVolume: volumeMode.value === 'single' ? undefined : chaptersPerVolume.value,
       imageQuality: imageQuality.value
     }
     // 传递元数据

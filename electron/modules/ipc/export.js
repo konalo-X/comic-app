@@ -70,21 +70,50 @@ function register(deps) {
 
     if (!chapters.length) throw new Error('没有已下载的章节')
 
+    let settings = {}
+    try {
+      const settingsPath = path.join(app.getPath('userData'), 'settings.json')
+      if (fs.existsSync(settingsPath)) {
+        settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) || {}
+      }
+    } catch (_) {}
+    const defaultVolumeMode = settings.epubVolumeMode || 'auto'
+    const defaultChaptersPerVolume = settings.epubChaptersPerVolume || 100
+    const defaultImageQuality = settings.epubImageQuality || 'original'
+    const defaultIncludeMeta = typeof settings.epubIncludeMeta === 'boolean' ? settings.epubIncludeMeta : true
+
     const outputPath = path.join(app.getPath('downloads'), `${sanitize(comicTitle)}.${format}`)
+    let effectiveMeta = undefined
+    if (format === 'epub') {
+      if (meta) {
+        effectiveMeta = meta
+      } else if (defaultIncludeMeta) {
+        effectiveMeta = {
+          title: comicTitle,
+          author: 'Unknown',
+          description: `${comicTitle}`,
+          language: 'zh-CN'
+        }
+      }
+    }
     const opts = {
       sourceDir: root,
       outputPath,
       title: comicTitle,
       chapters,
       onProgress: (p) => console.log(`[导出] ${comicTitle}: ${p.current}/${p.total}`),
-      meta: meta || undefined
+      meta: effectiveMeta
     }
 
-    if (format === 'epub' && volumeMode !== 'single') {
-      opts.chaptersPerVolume = chaptersPerVolume || 50
+    const effectiveVolumeMode = volumeMode || defaultVolumeMode
+    const effectiveChaptersPerVolume = chaptersPerVolume || defaultChaptersPerVolume
+    const effectiveImageQuality = imgQuality || defaultImageQuality
+
+    if (format === 'epub' && effectiveVolumeMode !== 'single') {
+      opts.chaptersPerVolume = effectiveChaptersPerVolume
     }
-    if (format === 'epub' && imgQuality) {
-      opts.imageQuality = imgQuality
+    if (format === 'epub') {
+      opts.imageQuality = effectiveImageQuality
     }
 
     if (format === 'epub') {
