@@ -339,8 +339,23 @@ function startReading() {
   if (chs.length > 0) {
     const comicId = selectedComic.value._id || selectedComic.value.sourceUrl
     router.push({ name: 'reader', params: { comicId } })
+    ensureFavorite()
   } else {
     alert('该漫画暂无章节内容，请先爬取漫画详情')
+  }
+}
+
+// 自动加收藏: 点击阅读/下载时确保已在书架(不阻塞主流程, 失败仅记日志)
+async function ensureFavorite() {
+  if (!selectedComic.value || isFav.value) return
+  const id = selectedComic.value._id || selectedComic.value.sourceUrl
+  if (!window.dbApi?.setFavorite) return
+  try {
+    await window.dbApi.setFavorite(id, 1)
+    selectedComic.value.favorited = 1
+    isFav.value = true
+  } catch (e) {
+    console.error('[自动收藏] 失败:', e)
   }
 }
 
@@ -383,6 +398,7 @@ async function cacheComic() {
     alert('请先选择一本漫画')
     return
   }
+  await ensureFavorite()
   if (caching.value || isInQueue.value) return
 
   if (!window.offlineApi) {
@@ -1397,12 +1413,14 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 400;
   color: var(--text-dim);
+  font-style: italic;
   transition: color 0.2s;
 }
 
 .chapter-item.downloaded .ch-number {
   color: var(--text);
   font-weight: 700;
+  font-style: normal;
 }
 
 .ch-title {
@@ -1410,6 +1428,7 @@ onMounted(() => {
   color: var(--text-dim);
   margin-top: 2px;
   white-space: nowrap;
+  font-style: italic;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1417,14 +1436,17 @@ onMounted(() => {
 .chapter-item.downloaded .ch-title {
   color: var(--text);
   font-weight: 600;
+  font-style: normal;
 }
 
 .chapter-item.active .ch-number {
   color: #fff;
+  font-style: normal;
 }
 
 .chapter-item.active .ch-title {
   color: rgba(255, 255, 255, 0.8);
+  font-style: normal;
 }
 
 /* ===== 空状态 ===== */
