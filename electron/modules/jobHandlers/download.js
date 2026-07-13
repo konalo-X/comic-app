@@ -83,6 +83,8 @@ async function saveChapterResult(chapterIndex, chapterName, comicTitle, sourceUr
   if (sourceUrl) {
     try { await db.updateChapterImageCountBySourceUrl(sourceUrl, chapterIndex, result.downloaded) } catch (_) {}
     try { await db.updateComic(sourceUrl, { local_path: path.dirname(chDir) }) } catch (_) {}
+    // 规则：下载到本地的漫画默认为已收藏，纳入自动追更池
+    try { await db.setFavorite(sourceUrl, 1) } catch (_) {}
     if (!result.failedImages || !result.failedImages.length) {
       try { await db.resetUpdateDelta(sourceUrl) } catch (_) {}
     }
@@ -231,6 +233,8 @@ async function jobHandlerDownloadComic(job, onProgress) {
 
   if (sourceUrl) {
     try { await db.updateComic(sourceUrl, { local_path: comicDir }) } catch (_) {}
+    // 规则：下载到本地的漫画默认为已收藏，纳入自动追更池
+    try { await db.setFavorite(sourceUrl, 1) } catch (_) {}
   }
 
   return { completed, totalChapters, results, comicTitle }

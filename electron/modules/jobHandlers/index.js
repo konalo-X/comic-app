@@ -234,7 +234,7 @@ function startAutoTasks() {
 
     lastFullSyncAt = now
     console.log('[Idle Sync] 检测到系统空闲，触发全量同步')
-    jobQueue.add('sync', { fullSync: true }, { priority: 3, maxRetries: 3, checkRateLimit: false })
+    jobQueue.add('sync', {}, { priority: 3, maxRetries: 3, checkRateLimit: false })
   }, IDLE_CHECK_INTERVAL)
   autoTimers.push(idleCheckTimer)
 
