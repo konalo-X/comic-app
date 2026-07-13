@@ -180,29 +180,41 @@ function _fetchWithElectronNet(urlStr, referer, fingerprint) {
     request.on('response', (response) => {
       clearTimeout(timeoutTimer)
 
+      // body 接收超时保护：response 头已到、但 data/end 永远不来（半截卡死）时兜底
+      const bodyTimer = setTimeout(() => {
+        try { response.destroy() } catch (_) {}
+        try { request.abort() } catch (_) {}
+        reject(new Error('body timeout'))
+      }, TIMEOUT)
+
       updateCookies(parsed.hostname, response.headers['set-cookie'])
 
       const statusCode = response.statusCode
       if ([301, 302, 307, 308].includes(statusCode)) {
         const location = response.headers['location']
         if (!location) {
+          clearTimeout(bodyTimer)
           response.destroy()
           return reject(new Error('Redirect without Location'))
         }
+        clearTimeout(bodyTimer)
         response.destroy()
         return resolve(_fetchWithElectronNet(absoluteUrl(location, urlStr), urlStr, fp))
       }
 
       if (statusCode >= 400) {
+        clearTimeout(bodyTimer)
         response.destroy()
         return reject(new Error('HTTP ' + statusCode))
       }
 
       const chunks = []
       response.on('data', (chunk) => {
+        clearTimeout(bodyTimer)
         chunks.push(chunk)
       })
       response.on('end', () => {
+        clearTimeout(bodyTimer)
         const raw = Buffer.concat(chunks)
         // Electron net 自动解压，直接转字符串
         const ct = (response.headers['content-type'] || '').toLowerCase()
@@ -215,7 +227,7 @@ function _fetchWithElectronNet(urlStr, referer, fingerprint) {
         resolve(html)
       })
       response.on('error', (err) => {
-        clearTimeout(timeoutTimer)
+        clearTimeout(bodyTimer)
         reject(err)
       })
     })
