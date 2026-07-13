@@ -172,12 +172,16 @@
               <div class="mini-thumb">
                 <img v-if="c.cover" :src="resolveCover(c.cover)" referrerpolicy="no-referrer" @error="onImgError" />
                 <div v-else class="mini-placeholder" :style="{ background: gradient(c.title) }">{{ c.title[0] }}</div>
+                <span v-if="c.local_path" class="mini-source-badge local" title="本地漫画">本</span>
+                <span v-else-if="c.sourceUrl" class="mini-source-badge online" title="在线漫画">线</span>
               </div>
               <div class="mini-info">
                 <div class="mini-title">{{ c.title }}</div>
                 <div class="mini-meta">
                   <span v-if="c.status">{{ c.status }}</span>
                   <span v-if="c.chapters">{{ c.chapters.length }}话</span>
+                  <span v-if="c.local_path" class="meta-local">本地</span>
+                  <span v-else-if="c.sourceUrl" class="meta-online">在线</span>
                 </div>
               </div>
             </div>
@@ -623,7 +627,6 @@ async function loadComics() {
     // 优先使用路由参数中的 id
     const targetId = props.id || route.params.id
     if (targetId) {
-      selectedId.value = targetId
       // 如果当前列表里匹配不到，则尝试按 id/sourceUrl 单独加载
       const matched = comics.value.find(c => c._id === targetId || c.sourceUrl === targetId)
       if (!matched) {
@@ -684,6 +687,13 @@ watch(selectedId, () => {
     })
   }
 })
+
+// 监听 comics 变化，确保 selectedComic 更新后重新加载下载状态
+watch(comics, () => {
+  if (selectedId.value && selectedComic.value) {
+    loadDownloadedChapterIndices()
+  }
+}, { deep: true })
 
 async function autoFetchChapters() {
   const comic = selectedComic.value
@@ -1516,6 +1526,7 @@ onMounted(() => {
   overflow: hidden;
   flex-shrink: 0;
   background: var(--bg-hover);
+  position: relative;
 }
 
 .mini-thumb img {
@@ -1533,6 +1544,27 @@ onMounted(() => {
   font-size: 18px;
   font-weight: 700;
   color: var(--text-dim);
+}
+
+/* 封面角标 */
+.mini-source-badge {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 3px;
+  border-radius: 3px;
+  line-height: 1;
+  pointer-events: none;
+}
+.mini-source-badge.local {
+  background: rgba(34, 197, 94, 0.9);
+  color: #fff;
+}
+.mini-source-badge.online {
+  background: rgba(99, 102, 241, 0.9);
+  color: #fff;
 }
 
 .mini-info {
@@ -1554,6 +1586,16 @@ onMounted(() => {
   color: var(--text-sub);
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+.mini-meta .meta-local {
+  color: #22c55e;
+  font-weight: 600;
+}
+.mini-meta .meta-online {
+  color: #6366f1;
+  font-weight: 600;
 }
 
 /* ===== 响应式 ===== */

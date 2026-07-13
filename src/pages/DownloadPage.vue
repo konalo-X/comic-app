@@ -93,6 +93,29 @@
         <div class="empty-title">暂无下载任务</div>
         <div class="empty-desc">在漫画详情页点击「离线下载」按钮添加下载任务</div>
       </div>
+
+      <!-- 失败任务 -->
+      <div v-if="failedJobs.length" class="failed-jobs-section">
+        <div class="section-header">
+          <div class="row gap-12">
+            <h2>❌ 失败任务</h2>
+            <span class="tag tag-danger">{{ failedJobs.length }} 个失败</span>
+          </div>
+          <button class="btn btn-primary btn-sm" @click="retryAllFailed">🔄 全部重试</button>
+        </div>
+        <div class="card failed-job-card" v-for="fj in failedJobs" :key="fj.id">
+          <div class="row between">
+            <div>
+              <div class="task-title">{{ fj.comic }} · {{ fj.chapter }}</div>
+              <div class="text-danger" style="font-size: 12px; margin-top: 4px;">错误：{{ fj.error }}</div>
+            </div>
+            <div class="row gap-4">
+              <button class="btn btn-primary btn-sm" @click="retryFailed(fj)">重试</button>
+              <button class="btn btn-ghost btn-sm" @click="removeFailed(fj)">移除</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 历史 Tab -->
@@ -267,6 +290,7 @@ const healthIssues = ref([])
 const healthScanning = ref(false)
 const healthScanDone = ref(false)
 const repairJobs = ref([])
+const failedJobs = ref([])
 
 function issueTagClass(type) {
   const map = { corrupt: 'tag-danger', empty_file: 'tag-danger', empty: 'tag-danger', gap: 'tag-warning', incomplete: 'tag-warning' }
@@ -407,6 +431,39 @@ async function removeTask(task) {
   tasks.value = tasks.value.filter(t => t.id !== task.id)
 }
 
+async function retryFailed(job) {
+  try {
+    await window.jobApi?.retry?.(job.jobId)
+    failedJobs.value = failedJobs.value.filter(j => j.id !== job.id)
+    loadJobs()
+    window.dispatchEvent(new CustomEvent('toast', { detail: `已重试：${job.comic}` }))
+  } catch (e) {
+    console.error('[重试] 失败:', job.jobId, e)
+    window.dispatchEvent(new CustomEvent('toast', { detail: `重试失败: ${e.message}` }))
+  }
+}
+
+async function retryAllFailed() {
+  try {
+    await window.jobApi?.retryAll?.()
+    failedJobs.value = []
+    loadJobs()
+    window.dispatchEvent(new CustomEvent('toast', { detail: '已重试所有失败任务' }))
+  } catch (e) {
+    console.error('[全部重试] 失败:', e)
+    window.dispatchEvent(new CustomEvent('toast', { detail: `重试失败: ${e.message}` }))
+  }
+}
+
+async function removeFailed(job) {
+  try {
+    await window.jobApi?.cancel?.(job.jobId)
+  } catch (e) {
+    console.error('[移除失败任务] 失败:', job.jobId, e)
+  }
+  failedJobs.value = failedJobs.value.filter(j => j.id !== job.id)
+}
+
 function openFolder(path) {
   if (!path) return
   if (window.windowApi?.openPath) {
@@ -426,12 +483,14 @@ let cleanupQueueChanged = null
 onMounted(async () => {
   await loadRecords()
   await loadJobs()
+  await loadFailedJobs()
 
   // 事件驱动刷新：任务队列变化时即时刷新
   if (window.jobApi?.onQueueChanged) {
     cleanupQueueChanged = window.jobApi.onQueueChanged(() => {
       if (activeTab.value === 'queue') {
         loadJobs()
+        loadFailedJobs()
       }
     })
   }
@@ -440,6 +499,7 @@ onMounted(async () => {
   refreshTimer = setInterval(() => {
     if (activeTab.value === 'queue') {
       loadJobs()
+      loadFailedJobs()
     }
   }, 30000)
 
@@ -566,6 +626,25 @@ async function loadJobs() {
     })
   } catch (e) {
     console.error('[下载队列] 加载失败:', e)
+  }
+}
+
+async function loadFailedJobs() {
+  try {
+    const jobs = await window.jobApi?.list('failed', 50) || []
+    const downloadJobs = jobs.filter(j =>
+      j.type === 'downloadComic' || j.type === 'downloadChapter'
+    )
+    failedJobs.value = downloadJobs.map(j => ({
+      id: j.id,
+      jobId: j.id,
+      comic: getComicDisplayName(j.payload),
+      chapter: getChapterDisplayName(j.payload, j.type === 'downloadComic'),
+      error: j.error || '未知错误',
+      createdAt: j.createdAt
+    }))
+  } catch (e) {
+    console.error('[失败任务] 加载失败:', e)
   }
 }
 
@@ -897,5 +976,27 @@ async function cleanupDuplicates() {
 }
 .download-health {
   animation: fadeIn 0.2s ease;
+}
+
+/* 失败任务区域 */
+.failed-jobs-section {
+  margin-top: 24px;
+  animation: fadeIn 0.3s ease;
+}
+.failed-job-card {
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(14px);
+  margin-bottom: 12px;
+  box-shadow: var(--shadow-sm);
+}
+.failed-job-card:hover {
+  border-color: rgba(239, 68, 68, 0.4);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.1);
+}
+.text-danger {
+  color: #ef4444;
 }
 </style>

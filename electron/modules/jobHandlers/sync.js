@@ -15,16 +15,18 @@ const { deriveCategoryFromTags, enrichChapters, addSyncJob, getJobQueue } = requ
 async function jobHandlerSync(job, onProgress) {
   const fullSync = job.payload?.fullSync === true
   const favoritedLimit = fullSync ? 10000 : 100
-  const untaggedLimit = fullSync ? 10000 : 20
+  const untaggedLimit = fullSync ? 10000 : 50
   const imgCountLimit = fullSync ? 10000 : 10
+  const missingFieldsLimit = fullSync ? 10000 : 30
 
   const batch = await db.getFavoritedForSyncBatch(favoritedLimit)
   const untagged = await db.getUntaggedComics(untaggedLimit)
   const needingImgCount = await db.getComicsNeedingImageCountUpdate(imgCountLimit)
+  const missingFields = await db.getComicsWithMissingFields(missingFieldsLimit)
 
   const seen = new Set()
   const comics = []
-  for (const c of [...(batch || []), ...(untagged || []), ...(needingImgCount || [])]) {
+  for (const c of [...(batch || []), ...(untagged || []), ...(needingImgCount || []), ...(missingFields || [])]) {
     const key = c.sourceUrl || c._id
     if (!seen.has(key)) {
       seen.add(key)
@@ -34,22 +36,48 @@ async function jobHandlerSync(job, onProgress) {
 
   if (comics.length === 0) return { enriched: 0, updated: 0, msg: '没有需要同步的漫画' }
 
-  let enriched = 0, updated = 0, failed = 0, newChapters = 0
+  let enriched = 0, updated = 0, failed = 0, skipped = 0, newChapters = 0
 
-  async function syncOneComic(comic, i) {
-    if (job.cancelled()) return { cancelled: true }
+  // 单本同步调用的超时包装: 防止某本漫画 getDetail/getPageList 半截卡死(即使 _fetch 有 90s 超时,
+  // enrichChapters 多章累加也可能无限拖延), 卡住就把这本标失败跳下一本, 不让整轮 sync 堆积到全局超时。
+  const withTimeout = (promise, ms, label) =>
+    Promise.race([
+      promise,
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} 超时 (${ms / 1000}s)`)), ms))
+    ])
+
+  async function syncOneComicInternal(comic, i) {
     try {
-      const source = comic.sourceUrl?.includes('smtt6') ? sources.get('smtt6') : sources.default
-      const detail = await source.getDetail(comic.sourceUrl)
+      if (job.cancelled()) return { cancelled: true }
+    // 快速跳过：非收藏漫画且字段完整且 1 小时内已同步过
+    const SKIP_THRESHOLD_MS = 60 * 60 * 1000 // 1 小时
+    const lastSyncAt = comic.last_sync_at || 0
+    const isRecentlySynced = Date.now() - lastSyncAt < SKIP_THRESHOLD_MS
+    const isFavorited = comic.favorited === 1 || comic.favorited === true
+    const hasMissingFields = !comic.tags || comic.tags.length === 0
+      || !comic.status || !comic.desc || !comic.category
+      || !comic.author || comic.chapter_count === 0
 
-      const needsEnrich = !comic.tags || comic.tags.length === 0
-        || !comic.status || !comic.desc || !comic.category
-      const localUrls = new Set((comic.chapters || []).map(c => normalizeUrl(c.url)).filter(Boolean))
-      const remoteUrls = new Set((detail.chapters || []).map(c => normalizeUrl(c.url)).filter(Boolean))
-      const hasNewChapters = remoteUrls.size > localUrls.size ||
-        [...remoteUrls].some(u => !localUrls.has(u))
+    if (!fullSync && !isFavorited && !hasMissingFields && isRecentlySynced) {
+      skipped++
+      onProgress({ current: i + 1, total: comics.length, title: comic.title, skipped: true })
+      if (comic._id) {
+        try { await db.markSynced([comic._id]) } catch (e) { console.warn('[Sync] markSynced 失败:', e.message) }
+      }
+      return { success: true, skipped: true }
+    }
 
-      if (needsEnrich || hasNewChapters) {
+    const source = comic.sourceUrl?.includes('smtt6') ? sources.get('smtt6') : sources.default
+    const detail = await withTimeout(source.getDetail(comic.sourceUrl), 60 * 1000, 'getDetail')
+
+    const needsEnrich = !comic.tags || comic.tags.length === 0
+      || !comic.status || !comic.desc || !comic.category
+    const localUrls = new Set((comic.chapters || []).map(c => normalizeUrl(c.url)).filter(Boolean))
+    const remoteUrls = new Set((detail.chapters || []).map(c => normalizeUrl(c.url)).filter(Boolean))
+    const hasNewChapters = remoteUrls.size > localUrls.size ||
+      [...remoteUrls].some(u => !localUrls.has(u))
+
+    if (needsEnrich || hasNewChapters) {
         const category = detail.category || deriveCategoryFromTags(detail.tags, comic.tags)
         const finalTitle = detail.title?.trim() || comic.title
         await db.upsertComic({
@@ -140,7 +168,7 @@ async function jobHandlerSync(job, onProgress) {
             }
           }
         }
-        } // end if (needsEnrich || hasNewChapters)
+      } // end if (needsEnrich || hasNewChapters)
 
       if (comic._id) {
         try {
@@ -154,7 +182,11 @@ async function jobHandlerSync(job, onProgress) {
             chaptersToCheck = (detail.chapters || []).slice(0, 3)
               .map((ch, i) => ({ index: i, name: ch.name, url: ch.url }))
           }
-          const { imageCountUpdates, chapterNameUpdates } = await enrichChapters(comic, chaptersToCheck, source)
+          const { imageCountUpdates, chapterNameUpdates } = await withTimeout(
+            enrichChapters(comic, chaptersToCheck, source),
+            60 * 1000,
+            'enrichChapters'
+          )
           if (imageCountUpdates.length > 0) {
             await db.updateChapterImageCounts(comic._id, imageCountUpdates)
           }
@@ -172,23 +204,48 @@ async function jobHandlerSync(job, onProgress) {
       }
       return { success: true }
     } catch (e) {
-      failed++
-      onProgress({ current: i + 1, total: comics.length, error: e.message })
-      return { success: false, error: e.message }
+      throw e
     }
+  }
+
+  async function syncOneComic(comic, i) {
+    if (job.cancelled()) return { cancelled: true }
+    let lastError = null
+    const MAX_RETRIES = 3
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        return await syncOneComicInternal(comic, i)
+      } catch (e) {
+        lastError = e
+        const msg = e.message || ''
+        const isRetryable = msg.includes('timeout') || msg.includes('ECONNRESET')
+          || msg.includes('ERR_CONNECTION_RESET') || msg.includes('ENOTFOUND')
+          || msg.includes('EAI_AGAIN') || msg.includes('body timeout')
+        if (isRetryable && attempt < MAX_RETRIES - 1) {
+          const backoffMs = 3000 * (attempt + 1) + Math.random() * 2000
+          console.log(`[Sync] ${comic.title} 第 ${attempt + 1} 次尝试失败，${(backoffMs / 1000).toFixed(1)}s 后重试...`)
+          await new Promise(r => setTimeout(r, backoffMs))
+        } else {
+          break
+        }
+      }
+    }
+    failed++
+    onProgress({ current: i + 1, total: comics.length, error: lastError.message })
+    return { success: false, error: lastError.message }
   }
 
   const SYNC_CONCURRENCY = 3
   const SYNC_DELAY_MS = 2000
   for (let i = 0; i < comics.length; i += SYNC_CONCURRENCY) {
-    if (job.cancelled()) return { enriched, updated, failed, newChapters, msg: '已取消' }
+    if (job.cancelled()) return { enriched, updated, failed, skipped, newChapters, msg: '已取消' }
     const batch = comics.slice(i, i + SYNC_CONCURRENCY)
     await Promise.allSettled(batch.map((comic, j) => syncOneComic(comic, i + j)))
     if (i + SYNC_CONCURRENCY < comics.length) {
       await new Promise(r => setTimeout(r, SYNC_DELAY_MS + Math.random() * 1000))
     }
   }
-  return { enriched, updated, failed, newChapters, total: comics.length }
+  return { enriched, updated, failed, skipped, newChapters, total: comics.length }
 }
 
 module.exports = { jobHandlerSync }

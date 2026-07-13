@@ -1,5 +1,15 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
+window.addEventListener('contextmenu', (e) => {
+  e.preventDefault()
+  ipcRenderer.send('show-context-menu', {
+    x: e.clientX,
+    y: e.clientY,
+    isEditable: e.target.closest('input, textarea, [contenteditable="true"]') !== null,
+    hasSelection: window.getSelection().toString().length > 0
+  })
+})
+
 // 捕获前端错误并转发到主进程
 window.addEventListener('error', (event) => {
   ipcRenderer.send('renderer:error', {
@@ -298,5 +308,14 @@ contextBridge.exposeInMainWorld('appApi', {
     const handler = (_, data) => cb(data)
     ipcRenderer.on('app:backgroundTasks', handler)
     return () => ipcRenderer.removeListener('app:backgroundTasks', handler)
+  }
+})
+
+// ============ 启动画面 API ============
+contextBridge.exposeInMainWorld('electronAPI', {
+  onSplashMessage: (cb) => {
+    const handler = (_, message) => cb(message)
+    ipcRenderer.on('splash-message', handler)
+    return () => ipcRenderer.removeListener('splash-message', handler)
   }
 })

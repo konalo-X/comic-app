@@ -80,7 +80,8 @@
       "icon": "build/icons/icon.icns",
       "target": [
         "dmg"
-      ]
+      ],
+      "darkModeSupport": true
     },
     "win": {
       "icon": "build/icons/icon.ico",
@@ -93,6 +94,33 @@
       "target": [
         "AppImage"
       ]
+    },
+    "dmg": {
+      "backgroundColor": "#1a1a2e",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 130,
+          "y": 190,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icons/icon.ico",
+      "uninstallerIcon": "build/icons/icon.ico",
+      "installerHeaderIcon": "build/icons/icon.ico"
     }
   },
   "optionalDependencies": {

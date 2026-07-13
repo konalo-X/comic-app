@@ -55,7 +55,9 @@ function initJobQueue() {
   jobQueue.register('downloadComic', jobHandlerDownloadComic)
   jobQueue.register('repairComic', jobHandlerRepairComic)
   jobQueue.register('enrichChapters', jobHandlerEnrichImageCounts)
-  jobQueue.registerMutexGroup('crawl', ['sync', 'crawlAll', 'autoEnrich', 'enrichChapters', 'repairComic'])
+  jobQueue.registerMutexGroup('crawl', ['sync', 'crawlAll', 'repairComic'])
+  // autoEnrich / enrichChapters 是轻量元数据补全，不和 sync 互斥(否则自动续排会饿死 sync)
+  jobQueue.registerMutexGroup('enrich', ['autoEnrich', 'enrichChapters'])
   jobQueue.rateLimits = {
     crawlAll: { maxCount: 1, windowMs: 15 * 60 * 1000 },
     sync: { maxCount: 1, windowMs: 10 * 60 * 1000 }
@@ -86,26 +88,8 @@ function initJobQueue() {
         }, 5 * 60 * 1000)
       }
     }
-    // 方案2：autoEnrich 单批(50本)跑完后，若仍有缺字段漫画，自动续排下一轮，
-    // 滚动补齐直到全部完成；若已全部补全则不再续排，避免死循环。
-    if (data.type === 'autoEnrich' && data.result && !data.result.cancelled) {
-      (async () => {
-        try {
-          const remaining = await db.getComicsWithMissingFields(1)
-          if (remaining && remaining.length > 0) {
-            const jq = getJobQueue()
-            if (jq) {
-              jq.add('autoEnrich', {}, { priority: 2, maxRetries: 2, delay: 60 * 1000, timeout: 10 * 60 * 1000 })
-              console.log('[AutoEnrich] 本批补全完成，仍有缺字段漫画，60s 后自动续补下一批')
-            }
-          } else {
-            console.log('[AutoEnrich] 所有漫画字段已补全，停止续排')
-          }
-        } catch (e) {
-          console.warn('[AutoEnrich] 续排检查失败:', e.message)
-        }
-      })()
-    }
+    // autoEnrich 已合并到 sync 任务中，不再自动续排
+    // sync 每 15 分钟运行一次，覆盖所有缺字段漫画的补全
   })
   jobQueue.on('failed', (data) => notifyQueueChanged('failed', data))
   jobQueue.on('paused', (data) => notifyQueueChanged('paused', data))
@@ -240,7 +224,7 @@ function startAutoTasks() {
 
   setAutoTimers(autoTimers)
 
-  console.log(`[Auto] 持久队列自动任务已启动（同步间隔 ${syncIntervalHours}h，已合并图片数补全）`)
+  console.log(`[Auto] 持久队列自动任务已启动（同步间隔 ${syncIntervalHours}h，已合并字段补全）`)
 }
 
 function stopAutoTasks() {

@@ -539,6 +539,15 @@ class JobQueue {
 
   // ============ 内部调度 ============
 
+  // 同步复位被抢占任务: 立即把 DB 状态 active -> waiting, 避免依赖 _finalizeJob 的异步回写产生竞态死锁
+  _preemptReset(id) {
+    try {
+      this._updateStatus(id, 'waiting', { error: '被高优先级任务抢占, 复位等待重跑' })
+    } catch (e) {
+      console.warn('[JobQueue] 抢占复位失败:', e.message)
+    }
+  }
+
   _preemptFor(newPriority, type) {
     // 优先处理互斥组冲突：如果新任务属于互斥组，直接抢占组内冲突任务
     if (type) {
@@ -548,6 +557,7 @@ class JobQueue {
         conflict.entry.controller.cancelled = true
         conflict.entry.controller._preempted = true
         this._active.delete(conflict.id)
+        this._preemptReset(conflict.id)
         return
       }
     }
@@ -565,6 +575,7 @@ class JobQueue {
       lowestEntry.controller.cancelled = true
       lowestEntry.controller._preempted = true
       this._active.delete(lowestEntry.job.id)
+      this._preemptReset(lowestEntry.job.id)
     }
   }
 
@@ -575,6 +586,24 @@ class JobQueue {
   }
 
   async _tick() {
+    // ============ 自愈: 复位卡死的 active 僵尸任务(无条件, 不受并发/暂停影响) ============
+    // 抢占/竞态可能让任务从内存 _active 删除但 DB 仍标 active, 且永不被重新调度 -> 死锁。
+    // 每轮检测: DB 标 active 但不在内存 _active, 且超过 15 分钟无进度更新 -> 复位为 waiting。
+    try {
+      const STALL_MS = 8 * 60 * 1000
+      const zombies = this.db.prepare(
+        `SELECT id FROM job_queue WHERE status = 'active'
+         AND (last_progress_at IS NULL OR last_progress_at < ?)`
+      ).all(Date.now() - STALL_MS)
+      for (const z of zombies) {
+        if (this._active.has(z.id)) continue // 真在跑, 不动
+        this._updateStatus(z.id, 'waiting', { error: '自愈: 复位卡死的 active 僵尸任务' })
+        console.log(`[JobQueue] 自愈: 复位卡死任务 ${z.id.substring(0, 8)} (active -> waiting)`)
+      }
+    } catch (e) {
+      console.warn('[JobQueue] 自愈扫描失败:', e.message)
+    }
+
     if (this._paused) return
     if (this._active.size >= this.concurrency) return
 
@@ -619,6 +648,7 @@ class JobQueue {
       conflict.entry.controller.cancelled = true
       conflict.entry.controller._preempted = true
       this._active.delete(conflict.id)
+      this._preemptReset(conflict.id)
       this._scheduleTick()
     }
   }

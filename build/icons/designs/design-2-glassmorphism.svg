@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="50%" style="stop-color:#16213e"/>
+      <stop offset="100%" style="stop-color:#0f3460"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:rgba(255,255,255,0.25)"/>
+      <stop offset="100%" style="stop-color:rgba(255,255,255,0.05)"/>
+    </linearGradient>
+    <linearGradient id="accent2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#e94560"/>
+      <stop offset="100%" style="stop-color:#ff6b6b"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="20" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- 深色背景 -->
+  <rect width="1024" height="1024" rx="224" ry="224" fill="url(#bg2)"/>
+
+  <!-- 发光装饰圆 -->
+  <circle cx="300" cy="300" r="200" fill="#e94560" opacity="0.15" filter="url(#glow)"/>
+  <circle cx="750" cy="750" r="150" fill="#533483" opacity="0.2" filter="url(#glow)"/>
+
+  <!-- 玻璃态卡片 -->
+  <g transform="translate(512, 512)">
+    <rect x="-180" y="-240" width="360" height="480" rx="32" ry="32" fill="url(#glass)" stroke="rgba(255,255,255,0.18)" stroke-width="2"/>
+
+    <!-- 高光 -->
+    <path d="M -180,-240 L 180,-240 L 180,-160 Q 0,-200 -180,-160 Z" fill="rgba(255,255,255,0.08)"/>
+
+    <!-- 漫画分镜 -->
+    <g transform="translate(0, -80)">
+      <!-- 分镜1 -->
+      <rect x="-140" y="-120" width="120" height="90" rx="12" fill="rgba(233,69,96,0.3)" stroke="rgba(233,69,96,0.5)" stroke-width="1.5"/>
+      <circle cx="-100" cy="-90" r="15" fill="url(#accent2)" opacity="0.8"/>
+      <circle cx="-60" cy="-70" r="10" fill="url(#accent2)" opacity="0.5"/>
+
+      <!-- 分镜2 -->
+      <rect x="20" y="-120" width="120" height="90" rx="12" fill="rgba(83,52,131,0.3)" stroke="rgba(83,52,131,0.5)" stroke-width="1.5"/>
+      <rect x="40" y="-100" width="80" height="8" rx="4" fill="rgba(255,255,255,0.4)"/>
+      <rect x="40" y="-80" width="60" height="8" rx="4" fill="rgba(255,255,255,0.25)"/>
+
+      <!-- 分镜3（大） -->
+      <rect x="-140" y="-10" width="280" height="110" rx="16" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.15)" stroke-width="1.5"/>
+      <rect x="-120" y="10" width="200" height="6" rx="3" fill="rgba(255,255,255,0.3)"/>
+      <rect x="-120" y="30" width="160" height="6" rx="3" fill="rgba(255,255,255,0.2)"/>
+      <rect x="-120" y="50" width="120" height="6" rx="3" fill="rgba(255,255,255,0.15)"/>
+
+      <!-- 对话气泡 -->
+      <ellipse cx="80" cy="40" rx="35" ry="25" fill="url(#accent2)" opacity="0.9"/>
+      <polygon points="60,60 50,75 70,62" fill="url(#accent2)" opacity="0.9"/>
+    </g>
+
+    <!-- 底部进度条 -->
+    <rect x="-140" y="180" width="280" height="6" rx="3" fill="rgba(255,255,255,0.1)"/>
+    <rect x="-140" y="180" width="180" height="6" rx="3" fill="url(#accent2)"/>
+  </g>
+</svg>

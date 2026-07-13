@@ -9,7 +9,7 @@ process.stderr.on('error', (err) => {
   throw err
 })
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
@@ -116,6 +116,53 @@ const { startup } = require('./modules/startup')
 const isDev = process.env.NODE_ENV === 'development'
 const downloadMgr = new DownloadManager()
 
+let splashWindow = null
+
+function createSplashWindow() {
+  splashWindow = new BrowserWindow({
+    width: 500,
+    height: 400,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    center: true,
+    resizable: false,
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false
+    }
+  })
+
+  const splashPath = isDev
+    ? path.join(__dirname, '../public/splash.html')
+    : path.join(__dirname, '../dist/splash.html')
+
+  splashWindow.loadFile(splashPath)
+
+  splashWindow.once('ready-to-show', () => {
+    splashWindow.show()
+  })
+
+  return splashWindow
+}
+
+function closeSplashWindow() {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    // 发送淡出消息
+    splashWindow.webContents.send('splash-message', 'fade-out')
+    // 等待淡出动画完成后关闭
+    setTimeout(() => {
+      if (splashWindow && !splashWindow.isDestroyed()) {
+        splashWindow.close()
+        splashWindow = null
+      }
+    }, 600)
+  }
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1100, height: 680, minWidth: 900, minHeight: 400,
@@ -131,6 +178,23 @@ function createWindow() {
   if (process.platform === 'darwin') {
     try { win.setWindowButtonVisibility(false) } catch (_) {}
   }
+  ipcMain.on('show-context-menu', (event, params) => {
+    const menuItems = []
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (params.isEditable) {
+      menuItems.push({ label: '剪切', accelerator: 'CmdOrCtrl+X', role: 'cut' })
+      menuItems.push({ label: '复制', accelerator: 'CmdOrCtrl+C', role: 'copy' })
+      menuItems.push({ label: '粘贴', accelerator: 'CmdOrCtrl+V', role: 'paste' })
+      menuItems.push({ type: 'separator' })
+      menuItems.push({ label: '全选', accelerator: 'CmdOrCtrl+A', role: 'selectAll' })
+    } else if (params.hasSelection) {
+      menuItems.push({ label: '复制', accelerator: 'CmdOrCtrl+C', role: 'copy' })
+    }
+    if (menuItems.length) {
+      Menu.buildFromTemplate(menuItems).popup({ window: win })
+    }
+  })
+
   win.on('maximize', () => win.webContents.send('window:maximize-change', true))
   win.on('unmaximize', () => win.webContents.send('window:maximize-change', false))
   if (isDev) {
@@ -169,10 +233,17 @@ app.commandLine.appendSwitch('ignore-certificate-errors')
 app.whenReady().then(() => {
   // 确保用户数据目录存在（app.getPath 在 whenReady 后才可靠）
   _writeLock()
-  startup({
-    imageProxy, cache, db, downloadPaths, jobHandlers, sources,
-    createWindow, ipcApi
-  })
+
+  // 创建启动画面
+  createSplashWindow()
+
+  // 延迟启动主应用，让启动画面显示一段时间
+  setTimeout(() => {
+    startup({
+      imageProxy, cache, db, downloadPaths, jobHandlers, sources,
+      createWindow, ipcApi, closeSplashWindow
+    })
+  }, 2500) // 显示 2.5 秒启动画面
 })
 
 app.on('window-all-closed', () => {

@@ -275,8 +275,17 @@ class Smtt6Source extends ComicSource {
           if (msg.includes('ECONNRESET') || msg.includes('ERR_CONNECTION_RESET')) {
             backoffMs = Math.min(30000, 2000 * Math.pow(2, i) + Math.random() * 3000)
             console.log(`[SmartCrawl] 连接重置，退避 ${(backoffMs / 1000).toFixed(1)}s 后重试...`)
-          } else if (msg.includes('timeout') || msg.includes('429')) {
-            backoffMs = Math.min(30000, 1500 * Math.pow(2, i) + Math.random() * 2000)
+          } else if (msg.includes('timeout') || msg.includes('body timeout')) {
+            // 超时错误增加更长的退避时间，并增加重试次数
+            backoffMs = Math.min(60000, 3000 * Math.pow(2, i) + Math.random() * 5000)
+            console.log(`[SmartCrawl] 请求超时，退避 ${(backoffMs / 1000).toFixed(1)}s 后重试...`)
+          } else if (msg.includes('429')) {
+            backoffMs = Math.min(60000, 5000 * Math.pow(2, i) + Math.random() * 5000)
+            console.log(`[SmartCrawl] 请求过于频繁(429)，退避 ${(backoffMs / 1000).toFixed(1)}s 后重试...`)
+          } else if (msg.includes('ENOTFOUND') || msg.includes('EAI_AGAIN')) {
+            // DNS 解析失败，等待更长时间
+            backoffMs = Math.min(60000, 5000 * Math.pow(2, i) + Math.random() * 3000)
+            console.log(`[SmartCrawl] DNS 解析失败，退避 ${(backoffMs / 1000).toFixed(1)}s 后重试...`)
           } else {
             backoffMs = (i + 1) * 2000 + Math.random() * 2000
           }

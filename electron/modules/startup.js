@@ -6,7 +6,7 @@ const { app, BrowserWindow, protocol } = require('electron')
 
 async function startup(deps) {
   const {
-    imageProxy, cache, db, downloadPaths, jobHandlers, sources, createWindow, ipcApi
+    imageProxy, cache, db, downloadPaths, jobHandlers, sources, createWindow, ipcApi, closeSplashWindow
   } = deps
 
   imageProxy.startImageProxyServer()
@@ -31,6 +31,11 @@ async function startup(deps) {
 
   jobHandlers.initJobQueue()
   createWindow()
+
+  // 关闭启动画面
+  if (closeSplashWindow) {
+    closeSplashWindow()
+  }
 
   scheduleCleanup(db)
   scheduleAutoScan(db, sources)

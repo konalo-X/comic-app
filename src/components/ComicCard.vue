@@ -18,12 +18,22 @@
         <div v-else class="thumb-placeholder">
           <span class="thumb-letter">{{ (comic.title || '?')[0] }}</span>
         </div>
-        <div v-if="comic.status === 'completed'" class="thumb-badge completed">已完结</div>
-        <div v-else-if="comic.status === 'serialized'" class="thumb-badge">连载中</div>
-        <div v-if="localStatus === 'local'" class="thumb-badge local">本地</div>
-        <div v-else-if="localStatus === 'update'" class="thumb-badge update">{{ updateBadgeText }}</div>
-        <div v-else class="thumb-badge online">在线</div>
-        <div v-if="comic.epubExists" class="thumb-badge epub-badge-card">EPUB</div>
+EPUB放在漫画卡片的右下角，圆框框起来。        <!-- 状态图标：左上角 -->
+        <div v-if="comic.status === 'completed'" class="status-icon completed" title="已完结">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <div v-else-if="comic.status === 'serialized'" class="status-icon serialized" title="连载中">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+        </div>
+        <!-- 来源图标：右上角 -->
+        <div v-if="localStatus === 'local' || localStatus === 'update'" class="source-icon local" title="本地漫画">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <div v-else class="source-icon online" title="在线漫画">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        </div>
+        <!-- EPUB水印：右下角椭圆边框 -->
+        <div v-if="comic.epubExists" class="epub-watermark">EPUB</div>
         <div v-if="progress > 0" class="card-progress-bar">
           <div class="fill" :style="{ width: progress + '%' }"></div>
         </div>
@@ -49,6 +59,8 @@
         <div class="card-title">{{ comic.title }}</div>
       </template>
     </div>
+    <!-- 更新数角标：卡片右上角斜对角，放在 card-thumb 外面避免被裁切 -->
+    <div v-if="localStatus === 'update'" class="update-dot">{{ updateBadgeText }}</div>
   </div>
 </template>
 
@@ -116,7 +128,7 @@ defineEmits(['click', 'dblclick', 'toggle-select', 'download'])
   position: relative;
   border: 1px solid var(--glass-border);
   background: var(--content-bg);
-  overflow: hidden;
+  overflow: visible;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   animation: cardFadeIn 0.5s ease both;
@@ -152,7 +164,8 @@ defineEmits(['click', 'dblclick', 'toggle-select', 'download'])
 
 .card-thumb {
   display: block; width: 100%; aspect-ratio: 3/4;
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0; overflow: hidden;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  overflow: hidden;
   position: relative; background: var(--bg-hover);
   flex-shrink: 0;
 }
@@ -186,59 +199,95 @@ defineEmits(['click', 'dblclick', 'toggle-select', 'download'])
   letter-spacing: -1px;
 }
 
-.thumb-badge {
-  position: absolute; top: 8px; left: 8px;
-  padding: 3px 8px; border-radius: 6px;
-  font-size: 10px; font-weight: 600; color: #fff;
-  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-  z-index: 3;
-  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.3);
-}
-.thumb-badge.completed {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.3);
-}
-.thumb-badge.local {
-  left: auto;
-  right: 8px;
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.3);
-}
-.thumb-badge.update {
-  left: auto;
-  right: 8px;
-  background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
-  box-shadow: 0 2px 6px rgba(249, 115, 22, 0.4);
-  animation: pulseBadge 2s ease-in-out infinite;
-}
-.thumb-badge.online {
-  left: auto;
-  right: 8px;
-  background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
-  box-shadow: 0 2px 6px rgba(107, 114, 128, 0.3);
-}
-
-.epub-badge-card {
-  left: auto;
-  right: 8px;
-  top: 36px;
-  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
-  box-shadow: 0 2px 6px rgba(139, 92, 246, 0.4);
-}
-
-.update-badge {
+/* 状态图标：左上角 */
+.status-icon {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 8px; left: 8px;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 3;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+}
+.status-icon.completed {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #fff;
+}
+.status-icon.serialized {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: #fff;
+  animation: spinSlow 3s linear infinite;
+}
+@keyframes spinSlow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes pulseBadge {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.15); opacity: 0.85; }
+}
+
+/* 来源图标：左下角 */
+.source-icon {
+  position: absolute;
+  bottom: 8px; left: 8px;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 3;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+}
+.source-icon.local {
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  color: #fff;
+}
+.source-icon.online {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  color: #fff;
+}
+
+/* 更新数角标：右上角斜对角 */
+.update-dot {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
   background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
   color: #fff;
   font-size: 10px;
   font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 6px;
-  z-index: 4;
-  box-shadow: 0 2px 6px rgba(249, 115, 22, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+  box-shadow: 0 2px 8px rgba(249, 115, 22, 0.6);
   animation: pulseBadge 2s ease-in-out infinite;
+  border: 2px solid var(--content-bg, #fff);
+}
+
+/* EPUB水印：右下角椭圆边框 */
+.epub-watermark {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.9);
+  background: rgba(139, 92, 246, 0.35);
+  border: 1px solid rgba(139, 92, 246, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 3;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
 }
 
 .skeleton-thumb {

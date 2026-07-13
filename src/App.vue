@@ -56,10 +56,32 @@
         </div>
         <div class="task-panel-footer">
           <span>作业队列：{{ footerData.activeDownloads }} 活跃 / {{ footerData.waitingCount }} 等待 / {{ footerData.completedCount }} 完成</span>
-          <span v-if="footerData.failedCount > 0" style="color: var(--danger)"> / {{ footerData.failedCount }} 失败</span>
+          <span v-if="footerData.failedCount > 0" class="failed-count-badge" @click.stop="showFailedDetails"> / {{ footerData.failedCount }} 失败</span>
         </div>
       </div>
     </footer>
+
+    <!-- 失败任务详情弹窗 -->
+    <div v-if="failedModalVisible" class="modal-overlay" @click="failedModalVisible = false">
+      <div class="modal-content failed-modal" @click.stop>
+        <div class="modal-header">
+          <h3>❌ 失败任务详情</h3>
+          <button class="modal-close" @click="failedModalVisible = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="failedJobs.length === 0" class="empty-state">暂无失败任务</div>
+          <div v-for="job in failedJobs" :key="job.id" class="failed-job-item">
+            <div class="failed-job-type">{{ job.typeLabel }}</div>
+            <div class="failed-job-error" :title="job.error">{{ job.error }}</div>
+            <div class="failed-job-time">{{ formatTime(job.updatedAt) }}</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-primary" @click="retryAllFailed" :disabled="failedJobs.length === 0">🔄 全部重试</button>
+          <button class="btn btn-ghost" @click="failedModalVisible = false">关闭</button>
+        </div>
+      </div>
+    </div>
 
     <div class="notification-container">
       <div
@@ -142,6 +164,18 @@ const footerData = ref({
 const footerTasks = ref([])
 const footerExpanded = ref(false)
 const footerRotateIndex = ref(0)
+const failedModalVisible = ref(false)
+const failedJobs = ref([])
+
+const taskTypeLabels = {
+  sync: '同步追更',
+  crawlAll: '全站爬取',
+  autoEnrich: '字段补全',
+  downloadChapter: '下载章节',
+  downloadComic: '下载漫画',
+  repairComic: '修复漫画',
+  enrichChapters: '章节增强'
+}
 
 let footerRotateTimer = null
 
@@ -155,6 +189,41 @@ const taskIcons = {
 
 let footerTimer = null
 let cleanupBgTasks = null
+
+async function showFailedDetails() {
+  try {
+    const jobs = await window.jobApi?.list?.('failed', 50) || []
+    failedJobs.value = jobs.map(j => ({
+      id: j.id,
+      type: j.type,
+      typeLabel: taskTypeLabels[j.type] || j.type,
+      error: j.error || '未知错误',
+      updatedAt: j.updatedAt
+    }))
+    failedModalVisible.value = true
+  } catch (e) {
+    console.error('[失败详情] 加载失败:', e)
+    addNotification('error', '加载失败', '无法获取失败任务详情')
+  }
+}
+
+async function retryAllFailed() {
+  try {
+    await window.jobApi?.retryAll?.()
+    addNotification('success', '重试成功', '已重试所有失败任务')
+    failedModalVisible.value = false
+    refreshFooterData()
+  } catch (e) {
+    console.error('[重试全部] 失败:', e)
+    addNotification('error', '重试失败', e.message || '未知错误')
+  }
+}
+
+function formatTime(ts) {
+  if (!ts) return '-'
+  const d = new Date(ts)
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
 
 async function refreshFooterData() {
   try {
@@ -695,5 +764,174 @@ const navItems = [
   .footer-bar {
     display: none;
   }
+}
+
+/* 失败任务详情弹窗 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.2s ease;
+}
+
+.modal-content {
+  background: var(--shell-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg);
+  max-width: 560px;
+  width: 90%;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  animation: modalIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  backdrop-filter: blur(20px);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.modal-close:hover {
+  color: var(--text);
+}
+
+.modal-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modal-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 12px 20px;
+  border-top: 1px solid var(--glass-border);
+}
+
+.failed-job-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  transition: background 0.2s;
+}
+
+.failed-job-item:hover {
+  background: var(--hover-bg);
+}
+
+.failed-job-type {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.failed-job-error {
+  font-size: 12px;
+  color: var(--danger);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.failed-job-time {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 32px;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.failed-count-badge {
+  color: var(--danger);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  transition: opacity 0.2s;
+}
+
+.failed-count-badge:hover {
+  opacity: 0.8;
+}
+
+.btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--brand);
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--glass-border);
+}
+
+.btn-ghost:hover {
+  background: var(--hover-bg);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalIn {
+  from { opacity: 0; transform: translateY(-20px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 </style>

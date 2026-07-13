@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f8f9fa"/>
+      <stop offset="100%" style="stop-color:#e9ecef"/>
+    </linearGradient>
+    <linearGradient id="bookGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#495057"/>
+      <stop offset="100%" style="stop-color:#212529"/>
+    </linearGradient>
+    <linearGradient id="pop" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff6b6b"/>
+      <stop offset="100%" style="stop-color:#ee5a6f"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 浅色背景 -->
+  <rect width="1024" height="1024" rx="224" ry="224" fill="url(#bg3)"/>
+
+  <!-- 中心书本 -->
+  <g transform="translate(512, 512)">
+    <!-- 书本阴影 -->
+    <rect x="-160" y="-210" width="320" height="420" rx="20" ry="20" fill="#dee2e6" transform="translate(8, 8)"/>
+
+    <!-- 书本主体 -->
+    <rect x="-160" y="-210" width="320" height="420" rx="20" ry="20" fill="url(#bookGrad)"/>
+
+    <!-- 书脊高光 -->
+    <rect x="-160" y="-210" width="40" height="420" rx="10" ry="10" fill="#343a40"/>
+    <rect x="-156" y="-210" width="4" height="420" fill="#495057"/>
+
+    <!-- 封面网格 -->
+    <g transform="translate(20, -40)">
+      <!-- 网格线 -->
+      <line x1="-80" y1="-100" x2="80" y2="-100" stroke="#495057" stroke-width="2"/>
+      <line x1="-80" y1="-20" x2="80" y2="-20" stroke="#495057" stroke-width="2"/>
+      <line x1="0" y1="-140" x2="0" y2="60" stroke="#495057" stroke-width="2"/>
+
+      <!-- 色块1 -->
+      <rect x="-80" y="-140" width="80" height="40" rx="6" fill="#ff6b6b" opacity="0.9"/>
+      <!-- 色块2 -->
+      <rect x="0" y="-140" width="80" height="40" rx="6" fill="#4ecdc4" opacity="0.9"/>
+      <!-- 色块3 -->
+      <rect x="-80" y="-20" width="80" height="80" rx="6" fill="#ffe66d" opacity="0.9"/>
+      <!-- 色块4 -->
+      <rect x="0" y="-20" width="80" height="80" rx="6" fill="#a8e6cf" opacity="0.9"/>
+
+      <!-- 漫画对话气泡 -->
+      <ellipse cx="40" cy="20" rx="30" ry="20" fill="white"/>
+      <polygon points="20,35 10,50 30,38" fill="white"/>
+      <rect x="25" y="12" width="30" height="4" rx="2" fill="#212529"/>
+      <rect x="25" y="22" width="20" height="4" rx="2" fill="#212529"/>
+    </g>
+
+    <!-- 底部装饰 -->
+    <rect x="-120" y="160" width="240" height="4" rx="2" fill="#495057"/>
+  </g>
+
+  <!-- 角落装饰 -->
+  <circle cx="180" cy="180" r="40" fill="#ff6b6b" opacity="0.15"/>
+  <circle cx="844" cy="844" r="60" fill="#4ecdc4" opacity="0.15"/>
+</svg>
