@@ -25,10 +25,18 @@ PORT_TIMEOUT=5
 
 # electron 主进程(承载 job queue 的后端)特征: comic-app 项目下的 Electron.app
 ELECTRON_PATTERN="projects/comic-app/node_modules/electron/dist/Electron.app"
+# 挂起开关: 存在此文件时看门狗不重启(用于主动停机/维护)
+SUSPEND_FILE="$APP_DIR/.watchdog_suspend"
 
 ts() { date "+%Y-%m-%d %H:%M:%S"; }
 
 log() { echo "[$(ts)] $*" | tee -a "$LOG"; }
+
+# ---------- 挂起开关检查(最优先, 须在函数定义之后) ----------
+if [ -f "$SUSPEND_FILE" ]; then
+  log "SUSPENDED (.watchdog_suspend 存在, 跳过探测与重启)"
+  exit 0
+fi
 
 touch "$LOG" 2>/dev/null || true
 
