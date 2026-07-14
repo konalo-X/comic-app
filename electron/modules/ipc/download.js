@@ -14,6 +14,25 @@ function register(deps) {
 
   const jq = deps.jq
 
+  // 全局下载进度转发: 不仅用户手动下载, sync 自动追更的 downloadChapter/downloadComic
+  // 任务进度(含网速 speed)也广播给前端 footer, 避免状态栏网速永远显示 0。
+  // 延迟注册: register() 同步执行时 jobQueue 可能尚未就绪, 用 getJobQueue() 惰性获取。
+  const registerGlobalProgressForward = () => {
+    const q = (deps.getJobQueue && deps.getJobQueue()) || deps.jq
+    if (!q || typeof q.on !== 'function') {
+      setTimeout(registerGlobalProgressForward, 1000)
+      return
+    }
+    q.on('progress', (data) => {
+      if (!data || (data.type !== 'downloadChapter' && data.type !== 'downloadComic')) return
+      const win = BrowserWindow.getAllWindows()[0]
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('download:jobProgress', data)
+      }
+    })
+  }
+  registerGlobalProgressForward()
+
   const {
     findComicDir, findChapterDir, getValidChapterImages, checkComicHealth,
     downloadChapterImages, resolveComicDir, getPrimaryDownloadRoot,
