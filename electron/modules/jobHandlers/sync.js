@@ -119,7 +119,18 @@ async function jobHandlerSync(job, onProgress) {
               seenThisRun.add(chUrl)
             }
             if (comicDir) {
-              // 用磁盘实际文件判断"已下载", 而非DB章节URL集合(已与源站同步, 永远相等)
+              // 一级快筛: 优先用 download_records 的 per-chapter 成功标记判断已下载,
+              // 命中则跳过磁盘 sharp 校验(99%的章已完整, 避免每本每章每图都读盘)
+              // comic_id 存的是 sourceUrl (见 download.js 落库)
+              let dbRecord = null
+              try {
+                const recs = await db.getDownloadRecords({ comicId: comic.sourceUrl, chapterIndex: idx })
+                dbRecord = recs.find(r => r.status === 'success' && (r.imagesCount || 0) > 0)
+              } catch (_) {}
+              if (dbRecord) {
+                continue
+              }
+              // 快筛未命中(无记录/记录失败)才落到磁盘实际文件判断"已下载"
               const existingChDir = findChapterDir(comicDir, idx, ch.name)
               if (existingChDir) {
                 const validFiles = await getValidChapterImages(existingChDir)
