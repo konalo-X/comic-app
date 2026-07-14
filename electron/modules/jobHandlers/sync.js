@@ -108,9 +108,21 @@ async function jobHandlerSync(job, onProgress) {
         if (resolvedComicDir === resolvedRoot) {
           console.warn(`[Sync] 漫画目录无效，跳过下载: ${detail.title || comic.title}`)
         } else if (resolvedComicDir !== resolvedRoot) {
+          const jobQueue = getJobQueue()
+          // 源站应有多少图: 从 db chapters.image_count 取(对齐 sort_order=idx)
+          // 无 image_count 的章无法精确判断完整性, 宁可多读盘也不误标 success
+          // 注意: 必须用 jobQueue.db (底层 better-sqlite3 句柄), db 业务模块无 .prepare
+          const expectedByIndex = new Map()
+          try {
+            if (comic._id && jobQueue?.db) {
+              const chRows = jobQueue.db.prepare('SELECT sort_order, image_count FROM chapters WHERE comic_id=?').all(comic._id)
+              for (const r of chRows) {
+                if (r.image_count) expectedByIndex.set(r.sort_order, r.image_count)
+              }
+            }
+          } catch (_) {}
           const seenThisRun = new Set()
           const payloads = []
-          const jobQueue = getJobQueue()
           for (let idx = 0; idx < detail.chapters.length; idx++) {
             const ch = detail.chapters[idx]
             const chUrl = normalizeUrl(ch.url)
@@ -128,26 +140,41 @@ async function jobHandlerSync(job, onProgress) {
                 dbRecord = recs.find(r => r.status === 'success' && (r.imagesCount || 0) > 0)
               } catch (_) {}
               if (dbRecord) {
-                continue
+                // 信任条件: 记录的张数必须 == 源站应有张数(若有 image_count), 否则重新校验磁盘
+                // 防止历史脏数据(旧逻辑把"磁盘有多少记多少")永久掩盖缺图
+                const trustedExp = expectedByIndex.get(idx) || 0
+                if (trustedExp > 0 && dbRecord.imagesCount === trustedExp) {
+                  continue
+                }
+                // 无 image_count 或张数不符: 落到磁盘实际文件校验(防损坏/缺图/脏数据)
               }
               // 快筛未命中(无记录/记录失败)才落到磁盘实际文件判断"已下载"
               const existingChDir = findChapterDir(comicDir, idx, ch.name)
               if (existingChDir) {
                 const validFiles = await getValidChapterImages(existingChDir)
+                const expected = expectedByIndex.get(idx) || 0
                 if (validFiles.length > 0) {
-                  // 懒补全: 读盘确认已下载后补写 download_records,
-                  // 下次 sync 快筛即可命中跳过, 不再逐图读盘(本地导入漫画无记录故需此步)
-                  try {
-                    await db.saveDownloadRecord({
-                      comicId: comic.sourceUrl,
-                      comicTitle: comic.title || detail.title || '',
-                      chapterIndex: idx,
-                      chapterName: ch.name,
-                      imagesCount: validFiles.length,
-                      path: existingChDir
-                    })
-                  } catch (_) {}
-                  continue
+                  // 完整性判定(满足主人要求: 不缺图 且 每张都正常):
+                  // - 有 image_count: 磁盘有效图数必须 == 应有多少图
+                  // - 无 image_count: 无法确认完整, 不标 success(下次仍校验, 但不会被永久遗漏)
+                  const isComplete = expected > 0 ? (validFiles.length === expected) : false
+                  if (process.env.COMIC_DEBUG_SYNC) console.log(`[DBG] ${comic.title} idx=${idx} '${ch.name}' valid=${validFiles.length} expected=${expected} isComplete=${isComplete}`)
+                  if (isComplete) {
+                    // 懒补全: 读盘确认完整后补写 download_records,
+                    // 下次 sync 快筛即可命中跳过, 不再逐图读盘(本地导入漫画无记录故需此步)
+                    try {
+                      await db.saveDownloadRecord({
+                        comicId: comic.sourceUrl,
+                        comicTitle: comic.title || detail.title || '',
+                        chapterIndex: idx,
+                        chapterName: ch.name,
+                        imagesCount: validFiles.length,
+                        path: existingChDir
+                      })
+                    } catch (_) {}
+                    continue
+                  }
+                  // validFiles>0 但不完整(缺图/损坏): 不标 success, 落到下方补下载
                 }
               }
             }
