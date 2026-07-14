@@ -25,12 +25,18 @@ async function downloadCoverIfNeeded(comicDir, coverUrl, referer) {
 }
 
 async function checkChapterAlreadyDownloaded(comicDir, chapterIndex, chapterName, comicTitle, sourceUrl, usedDirs) {
+  // 源站应有图数(image_count): skip 必须磁盘已有数 == 源站应有数, 否则当缺图补下。
+  // 主人要求: 数量缺就不能算已下载, 不能 skip。未知(0)时保留旧行为(只要有图就跳)。
+  let expected = 0
+  try { expected = await db.getChapterImageCountBySourceUrl(sourceUrl, chapterIndex) } catch (_) {}
+  const countOk = (validCount) => expected > 0 ? validCount >= expected : validCount > 0
+
   const chDirOnDisk = findChapterDir(comicDir, chapterIndex, chapterName, usedDirs)
   if (chDirOnDisk) {
     const { validFiles } = await getValidChapterImagesCached(chDirOnDisk)
     const allFiles = listChapterImages(chDirOnDisk)
     const corruptCount = allFiles.length - validFiles.length
-    if (validFiles.length > 0 && corruptCount === 0) {
+    if (validFiles.length > 0 && corruptCount === 0 && countOk(validFiles.length)) {
       if (usedDirs) usedDirs.add(chDirOnDisk)
       try {
         await db.saveDownloadRecord({
@@ -40,7 +46,8 @@ async function checkChapterAlreadyDownloaded(comicDir, chapterIndex, chapterName
       } catch (_) {}
       return { skipped: true, validFiles: validFiles.length, chDirOnDisk }
     }
-    return { skipped: false, corrupt: corruptCount > 0, chDirOnDisk, validFiles: validFiles.length }
+    // 数量不足 / 有损坏: 不 skip, 回去真下载补齐
+    return { skipped: false, corrupt: corruptCount > 0, chDirOnDisk, validFiles: validFiles.length, expected }
   }
 
   const existingRecords = await db.getDownloadRecords({ comicId: sourceUrl || comicTitle, chapterIndex })
@@ -49,12 +56,12 @@ async function checkChapterAlreadyDownloaded(comicDir, chapterIndex, chapterName
   )
   if (already && already.path && fs.existsSync(already.path)) {
     const { validFiles } = await getValidChapterImagesCached(already.path)
-    if (validFiles.length > 0) {
+    if (validFiles.length > 0 && countOk(validFiles.length)) {
       return { skipped: true, validFiles: validFiles.length }
     }
   }
 
-  return { skipped: false }
+  return { skipped: false, expected }
 }
 
 async function downloadChapterCore(job, comicDir, chapter, chapterIndex, comicTitle, sourceUrl, referer, onProgress) {
@@ -74,39 +81,44 @@ async function downloadChapterCore(job, comicDir, chapter, chapterIndex, comicTi
 
 async function saveChapterResult(chapterIndex, chapterName, comicTitle, sourceUrl, result, chDir) {
   if (!result.success) return
+  // 源站应有图数 = result.total(getPageList 页数)。
+  // result.downloaded 只是本次新下载的张数(增量补齐只下缺的),
+  // 判断完整性必须看磁盘实际有效图数, 不能只看本次 downloaded。
+  const expected = result.total || 0
+  const hasFailed = !!(result.failedImages && result.failedImages.length)
+  // 磁盘实际有效图数(真 sharp 校验, 含旧有+本次补的)
+  let diskValid = 0
+  try {
+    const { getValidChapterImagesCached } = require('../downloadPaths')
+    const r = await getValidChapterImagesCached(chDir)
+    diskValid = r.validFiles.length
+  } catch (_) {
+    diskValid = result.downloaded || 0
+  }
+  // 主人要求: 只有「数量不缺 + 每张都真 sharp 过 OK」才算 success。
+  const isComplete = expected > 0 && diskValid >= expected && !hasFailed
   try {
     await db.saveDownloadRecord({
       comicId: sourceUrl, comicTitle, chapterIndex,
-      chapterName, imagesCount: result.downloaded, path: chDir
+      chapterName, imagesCount: diskValid, path: chDir,
+      status: isComplete ? 'success' : 'incomplete'
     })
   } catch (_) {}
   if (sourceUrl) {
-    try { await db.updateChapterImageCountBySourceUrl(sourceUrl, chapterIndex, result.downloaded) } catch (_) {}
+    // 图数列(image_count)应存源站应有数(total), 不能用实际落盘数覆盖,
+    // 否则部分失败会把权威图数污染, 永久掩盖缺图。
+    if (expected > 0) {
+      try { await db.updateChapterImageCountBySourceUrl(sourceUrl, chapterIndex, expected) } catch (_) {}
+    }
     try { await db.updateComic(sourceUrl, { local_path: path.dirname(chDir) }) } catch (_) {}
     // 规则：下载到本地的漫画默认为已收藏，纳入自动追更池
     try { await db.setFavorite(sourceUrl, 1) } catch (_) {}
-    if (!result.failedImages || !result.failedImages.length) {
+    if (isComplete) {
       try { await db.resetUpdateDelta(sourceUrl) } catch (_) {}
     }
   }
-  // 下载完成的章: 每张图都已由 sharpPool.webpConvert 真解析过图头且正常,
-  // 立即写入 per-image sharp 缓存, 标记全部 OK, 避免 sync 二次 sharp 校验同一批图。
-  try {
-    if (result.failedImages && result.failedImages.length) {
-      // 有失败图: 不写全 OK 缓存, 让后续校验重新 sharp 失败图
-    } else {
-      const { saveSharpCache } = require('../downloadPaths')
-      const entries = {}
-      const files = listChapterImages(chDir)
-      for (const f of files) {
-        try {
-          const st = fs.statSync(f)
-          entries[path.basename(f)] = { size: st.size, mtime: Math.round(st.mtimeMs), ok: true }
-        } catch (_) {}
-      }
-      saveSharpCache(chDir, { entries })
-    }
-  } catch (_) {}
+  // 下载完成且完整的章: getValidChapterImagesCached 已对每张真 sharp 校验并写缓存,
+  // 无需重复写。不完整时不标 success, 让后续 sync 重新校验发现缺图。
 }
 
 async function jobHandlerDownloadChapter(job, onProgress) {

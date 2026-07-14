@@ -5,11 +5,14 @@ const { ensureDb } = require('./helpers')
 
 async function saveDownloadRecord(record) {
   const db = ensureDb()
-  const { comicId, comicTitle, chapterIndex, chapterName, imagesCount, path: imgPath } = record
+  const { comicId, comicTitle, chapterIndex, chapterName, imagesCount, path: imgPath, status, error } = record
+  // status 默认 success(向后兼容); 不完整章传 'incomplete'。completed 同步反映。
+  const st = status || 'success'
   db.prepare(`INSERT OR REPLACE INTO download_records
-    (comic_id, comic_title, chapter_index, chapter_name, images_count, path, downloaded_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
-    comicId || '', comicTitle || '', chapterIndex ?? 0, chapterName || '', imagesCount || 0, imgPath || '', Date.now()
+    (comic_id, comic_title, chapter_index, chapter_name, images_count, path, downloaded_at, status, completed, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    comicId || '', comicTitle || '', chapterIndex ?? 0, chapterName || '', imagesCount || 0, imgPath || '', Date.now(),
+    st, st === 'success' ? 1 : 0, error || null
   )
 }
 

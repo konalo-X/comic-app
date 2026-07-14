@@ -28,6 +28,18 @@ async function updateChapterImageCountBySourceUrl(sourceUrl, chapterIndex, image
   return 1
 }
 
+// 按 sourceUrl + 章节序号取源站应有图片数(image_count)。
+// 用于下载 skip 判定: 磁盘已有图数必须 == 源站应有数才能跳过, 否则当缺图补下。
+// 返回 0 表示未知(无 image_count), 由调用方决定如何处理。
+async function getChapterImageCountBySourceUrl(sourceUrl, chapterIndex) {
+  const db = ensureDb()
+  if (!sourceUrl) return 0
+  const row = db.prepare('SELECT id FROM comics WHERE sourceUrl = ? LIMIT 1').get(sourceUrl)
+  if (!row) return 0
+  const ch = db.prepare('SELECT image_count FROM chapters WHERE comic_id = ? AND sort_order = ? LIMIT 1').get(row.id, chapterIndex)
+  return (ch && ch.image_count) ? ch.image_count : 0
+}
+
 async function getComicsNeedingImageCountUpdate(batchSize) {
   const db = ensureDb()
   const rows = db.prepare(
@@ -145,6 +157,7 @@ async function markComicChaptersEnriched(comicId) {
 
 module.exports = {
   updateChapterImageCounts, updateChapterImageCountBySourceUrl,
+  getChapterImageCountBySourceUrl,
   getComicsNeedingImageCountUpdate, getChaptersWithoutImageCount,
   isChapterNameGeneric, getComicsWithGenericChapterNames,
   getComicsNeedingChapterNameEnrichment,
