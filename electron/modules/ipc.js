@@ -319,10 +319,25 @@ function registerAllIPC(deps) {
   function getBackgroundTasks() {
     const tasks = []
     const stats = getJobQueue() ? jq.getStats() : {}
-    const runningJobs = getJobQueue() ? (jq.listJobs('active', 200) || []) : []
-    const waitingJobs = getJobQueue() ? (jq.listJobs('waiting', 200) || []) : []
-
-    const allJobs = [...runningJobs, ...waitingJobs]
+    // 注意: jq.listJobs('active') 内部查的是 status IN(waiting,running,active,paused),
+    // 会把 waiting 也算进来。footer 的“运行中”必须只统计真正 running/active 的,
+    // 否则与 waiting 重叠导致显示 “运行中 199 / 等待 199” 这种假相等。
+    // 改用按类型聚合的真实计数(不受 limit 截断)。
+    const q = getJobQueue()
+    const countByTypeStatus = (statuses) => {
+      if (!q || !q.db) return {}
+      try {
+        const placeholders = statuses.map(() => '?').join(',')
+        const rows = q.db.prepare(
+          `SELECT type, count(*) AS n FROM job_queue WHERE status IN (${placeholders}) GROUP BY type`
+        ).all(...statuses)
+        const m = {}
+        for (const r of rows) m[r.type] = r.n
+        return m
+      } catch (_) { return {} }
+    }
+    const activeByType = countByTypeStatus(['running', 'active'])
+    const waitingByType = countByTypeStatus(['waiting'])
 
     const typeLabels = {
       sync: { label: '同步追更', icon: 'sync' },
@@ -335,18 +350,20 @@ function registerAllIPC(deps) {
     }
 
     const seenTypes = new Set()
-    for (const job of allJobs) {
-      const type = job.type
+    for (const type of new Set([...Object.keys(activeByType), ...Object.keys(waitingByType)])) {
       if (seenTypes.has(type)) continue
       seenTypes.add(type)
+      const active = activeByType[type] || 0
+      const waiting = waitingByType[type] || 0
+      if (active === 0 && waiting === 0) continue
       const info = typeLabels[type] || { label: type, icon: 'task' }
       tasks.push({
         type,
         label: info.label,
         icon: info.icon,
-        active: runningJobs.filter(j => j.type === type).length,
-        waiting: waitingJobs.filter(j => j.type === type).length,
-        total: allJobs.filter(j => j.type === type).length
+        active,
+        waiting,
+        total: active + waiting
       })
     }
 
