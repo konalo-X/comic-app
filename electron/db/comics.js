@@ -238,11 +238,19 @@ async function getUntaggedComics(limit = 50) {
 
 async function getFavoritedForSyncBatch(limit = 100) {
   const db = ensureDb()
+  // 降频策略: 连载中/状态未知的漫画每轮都扫;
+  // 已完结的漫画不会再更新, 只有超过 30 天没同步才扫一次(偶尔校验缺图/补字段)。
+  const STALE_MS = 30 * 24 * 60 * 60 * 1000
+  const finishedCutoff = Date.now() - STALE_MS
   const rows = db.prepare(
     `SELECT ${COMIC_SELECT_FIELDS}
      FROM comics WHERE favorited = 1
+       AND (
+         status IS NULL OR status = '' OR status NOT LIKE '%完结%'
+         OR COALESCE(last_sync_at, 0) < ?
+       )
      ORDER BY COALESCE(last_sync_at, 0) ASC, updatedAt DESC LIMIT ?`
-  ).all(limit)
+  ).all(finishedCutoff, limit)
   return loadComicsWithChapters(db, rows)
 }
 
