@@ -814,11 +814,10 @@ async function cleanupDuplicates() {
 /* 漫画分组折叠 */
 .task-group {
   margin-bottom: 12px;
-  background: rgba(255,255,255,0.86);
+  background: #ffffff;
   border-radius: var(--radius-lg);
-  border: 1px solid rgba(255,255,255,0.76);
+  border: 1px solid rgba(0,0,0,0.08);
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(14px);
   overflow: hidden;
 }
 .task-group:last-child { margin-bottom: 0; }
@@ -836,15 +835,19 @@ async function cleanupDuplicates() {
 }
 .group-caret.expanded { transform: rotate(90deg); }
 .group-info { flex: 1; min-width: 0; }
-.group-title { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.group-meta { font-size: 11px; margin-top: 2px; }
+.group-title { font-size: 14px; font-weight: 700; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-meta { font-size: 11px; color: #888; margin-top: 2px; }
 .group-actions { flex-shrink: 0; }
 .group-children {
   padding: 0 12px 10px 32px;
   border-top: 1px solid rgba(0,0,0,0.05);
+  background: #fafafc;
 }
 .group-children .task-row {
-  background: rgba(250,250,252,0.7);
+  background: #ffffff;
+  border: 1px solid rgba(0,0,0,0.06);
+  box-shadow: none;
+  backdrop-filter: none;
   margin-top: 8px;
   margin-bottom: 0;
   padding: 10px 14px;

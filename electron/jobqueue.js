@@ -616,25 +616,30 @@ class JobQueue {
     // 先检查最高优先级任务是否因互斥组被阻塞，是则抢占并等待下一轮
     if (this._tryMutexPreempt(waiting)) return
 
-    const activeTypeCounts = {}
-    for (const entry of this._active.values()) {
-      const t = entry.job.type
-      activeTypeCounts[t] = (activeTypeCounts[t] || 0) + 1
-    }
-
-    const row = waiting.find(r => {
-      if (!this._canStart(r.type)) return false
-      const typeMax = this.typeConcurrency[r.type]
-      if (typeMax !== undefined && typeMax > 0) {
-        if ((activeTypeCounts[r.type] || 0) >= typeMax) return false
-      } else {
-        if (activeTypeCounts[r.type] && r.priority > 1) return false
+    // 循环填满并发槽: 之前只 `await _executeJob(row)` 会一直等到整个任务跑完,
+    // 导致无论 concurrency 多大都只串行跑 1 个。现在不 await(启动时同步把任务加进 _active),
+    // 循环直到 active 填满或无可启动任务。
+    while (this._active.size < this.concurrency) {
+      const activeTypeCounts = {}
+      for (const entry of this._active.values()) {
+        const t = entry.job.type
+        activeTypeCounts[t] = (activeTypeCounts[t] || 0) + 1
       }
-      return true
-    })
-
-    if (!row) return
-    await this._executeJob(row)
+      const row = waiting.find(r => {
+        if (this._active.has(r.id)) return false
+        if (!this._canStart(r.type)) return false
+        const typeMax = this.typeConcurrency[r.type]
+        if (typeMax !== undefined && typeMax > 0) {
+          if ((activeTypeCounts[r.type] || 0) >= typeMax) return false
+        } else {
+          if (activeTypeCounts[r.type] && r.priority > 1) return false
+        }
+        return true
+      })
+      if (!row) break
+      // 不 await: _executeJob 同步先 _updateStatus(active)+_active.set, 再异步跑 handler
+      this._executeJob(row)
+    }
   }
 
   _tryMutexPreempt(waiting) {
