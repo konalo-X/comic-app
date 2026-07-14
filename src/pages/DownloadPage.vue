@@ -64,24 +64,45 @@
       </div>
 
       <div class="card queue-card water-ripple">
-        <div v-for="t in tasks" :key="t.id" class="task-row">
-          <div class="task-info">
-            <div class="task-title">{{ t.comic }} · {{ t.chapter }}</div>
-            <div class="row gap-8 mt-4">
-              <span class="text-sub task-meta">{{ t.done }} / {{ t.total }} {{ t._unit || '页' }}</span>
-              <span v-if="t.speed" class="text-sub task-meta">{{ t.speed }}</span>
+        <div v-for="g in taskGroups" :key="g.comic" class="task-group">
+          <!-- 漫画分组标题行(可折叠) -->
+          <div class="group-header" @click="toggleGroup(g.comic)">
+            <span class="group-caret" :class="{ expanded: g.expanded }">▶</span>
+            <div class="group-info">
+              <div class="group-title">{{ g.comic }}</div>
+              <div class="group-meta text-sub">{{ g.count }} 个章节 · {{ groupStatusText(g) }}</div>
+            </div>
+            <span :class="['task-status-text', statusCls({ status: g.groupStatus })]">
+              {{ g.downloadingCount ? '下载中' : g.groupStatus === 'paused' ? '已暂停' : g.groupStatus === 'done' ? '已完成' : '等待中' }}
+            </span>
+            <div class="row gap-4 group-actions" @click.stop>
+              <button v-if="g.downloadingCount" class="btn btn-secondary btn-sm" @click="pauseGroup(g)">全暂停</button>
+              <button v-if="g.pausedCount || g.queuedCount" class="btn btn-primary btn-sm" @click="resumeGroup(g)">全继续</button>
+              <button class="btn btn-ghost btn-sm" @click="removeGroup(g)">移除全部</button>
             </div>
           </div>
-          <div class="progress-bar task-progress">
-            <div class="fill download" :style="{ width: pct(t) + '%' }"></div>
-          </div>
-          <span class="task-status">{{ pct(t) }}%</span>
-          <span :class="['task-status-text', statusCls(t)]">{{ t.statusText }}</span>
-          <div class="row gap-4 task-actions">
-            <button v-if="t.status === 'downloading'" class="btn btn-secondary btn-sm" @click="pauseTask(t)">暂停</button>
-            <button v-if="t.status === 'paused' || t.status === 'queued'" class="btn btn-primary btn-sm" @click="resumeTask(t)">继续</button>
-            <button class="btn btn-ghost btn-sm" @click="removeTask(t)">移除</button>
-            <button v-if="t.status === 'done'" class="btn btn-ghost btn-sm" title="打开文件夹" @click="openFolder(t.path)">打开</button>
+          <!-- 展开后的章节明细 -->
+          <div v-show="g.expanded" class="group-children">
+            <div v-for="t in g.items" :key="t.id" class="task-row">
+              <div class="task-info">
+                <div class="task-title">{{ t.chapter }}</div>
+                <div class="row gap-8 mt-4">
+                  <span class="text-sub task-meta">{{ t.done }} / {{ t.total }} {{ t._unit || '页' }}</span>
+                  <span v-if="t.speed" class="text-sub task-meta">{{ t.speed }}</span>
+                </div>
+              </div>
+              <div class="progress-bar task-progress">
+                <div class="fill download" :style="{ width: pct(t) + '%' }"></div>
+              </div>
+              <span class="task-status">{{ pct(t) }}%</span>
+              <span :class="['task-status-text', statusCls(t)]">{{ t.statusText }}</span>
+              <div class="row gap-4 task-actions">
+                <button v-if="t.status === 'downloading'" class="btn btn-secondary btn-sm" @click="pauseTask(t)">暂停</button>
+                <button v-if="t.status === 'paused' || t.status === 'queued'" class="btn btn-primary btn-sm" @click="resumeTask(t)">继续</button>
+                <button class="btn btn-ghost btn-sm" @click="removeTask(t)">移除</button>
+                <button v-if="t.status === 'done'" class="btn btn-ghost btn-sm" title="打开文件夹" @click="openFolder(t.path)">打开</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -285,6 +306,64 @@ watch(() => route.name, (name) => {
 const tasks = ref([])
 const downloading = computed(() => tasks.value.filter(t => t.status === 'downloading'))
 const queued = computed(() => tasks.value.filter(t => t.status === 'queued'))
+
+// 按漫画分组折叠: 同一本漫画的多个章节任务归为一组
+const expandedGroups = ref(new Set())
+function toggleGroup(comic) {
+  const s = new Set(expandedGroups.value)
+  if (s.has(comic)) s.delete(comic); else s.add(comic)
+  expandedGroups.value = s
+}
+const taskGroups = computed(() => {
+  const map = new Map()
+  for (const t of tasks.value) {
+    const key = t.comic || '未知漫画'
+    if (!map.has(key)) map.set(key, [])
+    map.get(key).push(t)
+  }
+  const groups = []
+  for (const [comic, items] of map) {
+    const downloadingCount = items.filter(t => t.status === 'downloading').length
+    const queuedCount = items.filter(t => t.status === 'queued').length
+    const pausedCount = items.filter(t => t.status === 'paused').length
+    const doneCount = items.filter(t => t.status === 'done').length
+    let groupStatus = 'queued'
+    if (downloadingCount > 0) groupStatus = 'downloading'
+    else if (pausedCount > 0 && queuedCount === 0) groupStatus = 'paused'
+    else if (queuedCount === 0 && doneCount === items.length) groupStatus = 'done'
+    groups.push({
+      comic,
+      items,
+      count: items.length,
+      downloadingCount,
+      queuedCount,
+      pausedCount,
+      doneCount,
+      groupStatus,
+      expanded: expandedGroups.value.has(comic)
+    })
+  }
+  // 下载中的组排前面, 其次按任务数降序
+  groups.sort((a, b) => {
+    if ((b.downloadingCount > 0) !== (a.downloadingCount > 0)) return b.downloadingCount - a.downloadingCount
+    return b.count - a.count
+  })
+  return groups
+})
+function groupStatusText(g) {
+  const parts = []
+  if (g.downloadingCount) parts.push(`下载中 ${g.downloadingCount}`)
+  if (g.queuedCount) parts.push(`等待 ${g.queuedCount}`)
+  if (g.pausedCount) parts.push(`暂停 ${g.pausedCount}`)
+  if (g.doneCount) parts.push(`完成 ${g.doneCount}`)
+  return parts.join(' · ')
+}
+function pauseGroup(g) { for (const t of g.items) if (t.status === 'downloading') pauseTask(t) }
+function resumeGroup(g) { for (const t of g.items) if (t.status === 'paused' || t.status === 'queued') resumeTask(t) }
+function removeGroup(g) {
+  if (!confirm(`确定移除「${g.comic}」的 ${g.count} 个下载任务?`)) return
+  for (const t of [...g.items]) removeTask(t)
+}
 
 const healthIssues = ref([])
 const healthScanning = ref(false)
@@ -730,6 +809,45 @@ async function cleanupDuplicates() {
   background: transparent;
   border: none;
   box-shadow: none;
+}
+
+/* 漫画分组折叠 */
+.task-group {
+  margin-bottom: 12px;
+  background: rgba(255,255,255,0.86);
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255,255,255,0.76);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+}
+.task-group:last-child { margin-bottom: 0; }
+.group-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.group-header:hover { background: rgba(255, 140, 90, 0.06); }
+.group-caret {
+  font-size: 10px; color: var(--text-dim, #999);
+  transition: transform 0.2s; flex-shrink: 0;
+}
+.group-caret.expanded { transform: rotate(90deg); }
+.group-info { flex: 1; min-width: 0; }
+.group-title { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-meta { font-size: 11px; margin-top: 2px; }
+.group-actions { flex-shrink: 0; }
+.group-children {
+  padding: 0 12px 10px 32px;
+  border-top: 1px solid rgba(0,0,0,0.05);
+}
+.group-children .task-row {
+  background: rgba(250,250,252,0.7);
+  margin-top: 8px;
+  margin-bottom: 0;
+  padding: 10px 14px;
 }
 
 .task-row {
