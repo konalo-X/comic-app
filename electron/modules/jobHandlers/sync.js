@@ -239,10 +239,12 @@ async function jobHandlerSync(job, onProgress) {
             chaptersToCheck = (detail.chapters || []).slice(0, 3)
               .map((ch, i) => ({ index: i, name: ch.name, url: ch.url }))
           }
-          // enrichChapters 多章累加, 每章 getPageList 可能 90s, 提到 240s 避免多章时被误断
+          // enrichChapters 串行循环, 每章 getPageList 最多 90s + 250ms 间隔。
+          // 固定 240s 盖不住多章慢源(10章最坏 900s), 改为按章数动态: 每章 100s + 下限 240s。
+          const enrichTimeoutMs = Math.max(240, chaptersToCheck.length * 100) * 1000
           const { imageCountUpdates, chapterNameUpdates } = await withTimeout(
             enrichChapters(comic, chaptersToCheck, source),
-            240 * 1000,
+            enrichTimeoutMs,
             'enrichChapters'
           )
           if (imageCountUpdates.length > 0) {
