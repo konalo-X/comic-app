@@ -522,9 +522,13 @@ class JobQueue {
     if (status === 'all') {
       return this._queryJobs(null, [], 'priority ASC, created_at DESC', limit)
     } else if (status === 'active') {
+      // 排序: 先把真正在跑的(active/running)和 paused 排在最前,
+      // 避免它们因 created_at 早而排到末尾被 LIMIT 截掉(导致前端“进行中 0”)。
       return this._queryJobs(
         `status IN (${STATUS_ACTIVE_QUERY.map(() => '?').join(',')})`,
-        STATUS_ACTIVE_QUERY, 'priority ASC, created_at DESC', limit
+        STATUS_ACTIVE_QUERY,
+        `CASE status WHEN 'running' THEN 0 WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END ASC, priority ASC, created_at ASC`,
+        limit
       )
     } else {
       return this._queryJobs('status = ?', [status], 'priority ASC, created_at DESC', limit)
