@@ -134,7 +134,21 @@ async function jobHandlerSync(job, onProgress) {
               const existingChDir = findChapterDir(comicDir, idx, ch.name)
               if (existingChDir) {
                 const validFiles = await getValidChapterImages(existingChDir)
-                if (validFiles.length > 0) continue
+                if (validFiles.length > 0) {
+                  // 懒补全: 读盘确认已下载后补写 download_records,
+                  // 下次 sync 快筛即可命中跳过, 不再逐图读盘(本地导入漫画无记录故需此步)
+                  try {
+                    await db.saveDownloadRecord({
+                      comicId: comic.sourceUrl,
+                      comicTitle: comic.title || detail.title || '',
+                      chapterIndex: idx,
+                      chapterName: ch.name,
+                      imagesCount: validFiles.length,
+                      path: existingChDir
+                    })
+                  } catch (_) {}
+                  continue
+                }
               }
             }
             let dedupTitle = (comic.title || detail.title || '').trim()
