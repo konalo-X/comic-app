@@ -61,8 +61,9 @@ function addSyncJob(priority = 3) {
     console.warn('[Sync] 检查已有 sync 任务失败:', e.message)
   }
   const checkRateLimit = priority >= 2
-  // sync 单轮可能扫多本漫画(每本 getDetail 60s + enrichChapters 60s), 给较宽松总超时避免被默认 5min 截断
-  return jobQueue.add('sync', {}, { priority, maxRetries: 3, checkRateLimit, timeout: 30 * 60 * 1000 })
+  // sync 单轮可能扫多本漫画(每本 getDetail 最多 150s + enrichChapters 最多 240s),
+  // 给宽松总超时避免慢源站时整轮被截断(默认 5min 太短)。
+  return jobQueue.add('sync', {}, { priority, maxRetries: 3, checkRateLimit, timeout: 60 * 60 * 1000 })
 }
 
 function getJobQueue() {
