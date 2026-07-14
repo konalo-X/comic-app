@@ -7,7 +7,7 @@ const db = require('../../db')
 const { sanitizeFilename: sanitize } = require('../../utils')
 const {
   findComicDir, resolveUniqueComicDir, getPrimaryDownloadRoot,
-  findChapterDir, getValidChapterImages,
+  findChapterDir, getValidChapterImages, getValidChapterImagesCached,
   normalizeUrl
 } = require('../downloadPaths')
 const { deriveCategoryFromTags, enrichChapters, addSyncJob, getJobQueue } = require('./helpers')
@@ -151,14 +151,19 @@ async function jobHandlerSync(job, onProgress) {
               // 快筛未命中(无记录/记录失败)才落到磁盘实际文件判断"已下载"
               const existingChDir = findChapterDir(comicDir, idx, ch.name)
               if (existingChDir) {
-                const validFiles = await getValidChapterImages(existingChDir)
+                // 二级校验: 用 per-image sharp 缓存, 仅新增/修改/损坏的图才真 sharp;
+                // 命中缓存的图(曾 sharp 过 OK 且未变)不再解析图头。
+                // 主人要求: success 必须建立在「不缺图 且 每张都真 sharp 过 OK」之上。
+                const { validFiles, allVerified } = await getValidChapterImagesCached(existingChDir)
                 const expected = expectedByIndex.get(idx) || 0
                 if (validFiles.length > 0) {
                   // 完整性判定(满足主人要求: 不缺图 且 每张都正常):
                   // - 有 image_count: 磁盘有效图数必须 == 应有多少图
                   // - 无 image_count: 无法确认完整, 不标 success(下次仍校验, 但不会被永久遗漏)
-                  const isComplete = expected > 0 ? (validFiles.length === expected) : false
-                  if (process.env.COMIC_DEBUG_SYNC) console.log(`[DBG] ${comic.title} idx=${idx} '${ch.name}' valid=${validFiles.length} expected=${expected} isComplete=${isComplete}`)
+                  // - allVerified: 每张图都必须真做过 sharp 校验且 OK(不能只靠数量推断)
+                  const countOk = expected > 0 ? (validFiles.length === expected) : false
+                  const isComplete = countOk && allVerified
+                  if (process.env.COMIC_DEBUG_SYNC) console.log(`[DBG] ${comic.title} idx=${idx} '${ch.name}' valid=${validFiles.length} expected=${expected} allVerified=${allVerified} isComplete=${isComplete}`)
                   if (isComplete) {
                     // 懒补全: 读盘确认完整后补写 download_records,
                     // 下次 sync 快筛即可命中跳过, 不再逐图读盘(本地导入漫画无记录故需此步)
@@ -254,7 +259,11 @@ async function jobHandlerSync(job, onProgress) {
       }
       return { success: true }
     } catch (e) {
-      throw e
+      // 单本漫画同步失败(某章 getDetail/校验/IO 异常)不应拖垮整轮 sync:
+      // 记日志并标记该本失败, 让其进入重试池, 但继续处理后续漫画。
+      console.warn(`[Sync] 漫画《${comic.title || comic.sourceUrl}》单本同步异常, 标记失败继续: ${e.message}`)
+      try { await db.markSyncFailed([comic._id]) } catch (_) {}
+      return { success: false, error: e.message }
     }
   }
 

@@ -329,6 +329,89 @@ async function getValidChapterImages(chapterDir) {
   return validFiles
 }
 
+// ---- Per-image 校验缓存 ----
+// 主人要求: success 必须建立在「章节图片不缺 且 每张图片都真 sharp 解析过图头且正常」之上;
+// 且 sharp 过 OK 的图以后不再重复 sharp。
+// 实现: 每章一个 .sharp_cache.json, 记录每个图片文件 {size, mtimeMs} 指纹。
+// 指纹未变的图视为「曾经 sharp 过 OK」, 命中缓存直接跳过 sharp; 仅新增/修改/损坏(指纹变)的图才 true sharp。
+// 返回 { validFiles, allVerified }:
+//   - validFiles: 通过校验(或命中缓存)的文件绝对路径数组
+//   - allVerified: 是否「每张图都真做过 sharp 校验且 OK」(即无未校验图、无损坏图)
+//     只有 allVerified && 数量不缺 才能写 success。
+function getSharpCachePath(chDir) {
+  return path.join(chDir, '.sharp_cache.json')
+}
+
+function loadSharpCache(chDir) {
+  const p = getSharpCachePath(chDir)
+  try {
+    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8')) || {}
+  } catch (_) {}
+  return {}
+}
+
+function saveSharpCache(chDir, cache) {
+  try {
+    fs.writeFileSync(getSharpCachePath(chDir), JSON.stringify(cache))
+  } catch (_) {}
+}
+
+function fileFingerprint(filePath) {
+  try {
+    const st = fs.statSync(filePath)
+    return { size: st.size, mtime: Math.round(st.mtimeMs) }
+  } catch (_) {
+    return null
+  }
+}
+
+async function getValidChapterImagesCached(chapterDir) {
+  const allFiles = listChapterImages(chapterDir)
+  if (allFiles.length === 0) return { validFiles: [], allVerified: false }
+
+  const cache = loadSharpCache(chapterDir)
+  const cacheEntries = cache.entries || {}
+  const validFiles = []
+  let allVerified = true
+  let dirty = false
+  const nextEntries = {}
+
+  for (const f of allFiles) {
+    const fp = fileFingerprint(f)
+    const base = path.basename(f)
+    const prev = cacheEntries[base]
+    const hit = fp && prev && prev.size === fp.size && prev.mtime === fp.mtime
+    if (hit && prev.ok === true) {
+      // 命中缓存: 曾经 sharp 过 OK, 且文件未变 -> 不再 sharp, 直接信任
+      validFiles.push(f)
+      nextEntries[base] = prev
+      continue
+    }
+    // 需要真 sharp 校验(新增/修改/或曾损坏)
+    const ok = await validateImageFile(f)
+    if (ok) {
+      validFiles.push(f)
+      nextEntries[base] = { size: fp ? fp.size : 0, mtime: fp ? fp.mtime : 0, ok: true }
+    } else {
+      allVerified = false
+      // 损坏/空文件: 记录 ok=false, 下次若文件变了会重新 sharp
+      nextEntries[base] = { size: fp ? fp.size : 0, mtime: fp ? fp.mtime : 0, ok: false }
+      console.warn(`[下载] 检测到损坏/空图片文件: ${f}`)
+    }
+    dirty = true
+  }
+
+  // 清理已删除文件的缓存条目
+  for (const k of Object.keys(nextEntries)) {
+    if (!allFiles.some(f => path.basename(f) === k)) delete nextEntries[k]
+  }
+
+  if (dirty || Object.keys(nextEntries).length !== Object.keys(cacheEntries).length) {
+    saveSharpCache(chapterDir, { entries: nextEntries })
+  }
+  return { validFiles, allVerified }
+}
+
 async function checkDiskSpace(dirPath, requiredBytes) {
   try {
     const info = await getDiskInfo(dirPath)
@@ -772,6 +855,8 @@ module.exports = {
   listChapterImages,
   validateImageFile,
   getValidChapterImages,
+  getValidChapterImagesCached,
+  getSharpCachePath,
   checkDiskSpace,
   getChapterStatePath,
   loadChapterState,

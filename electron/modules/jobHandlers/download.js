@@ -9,7 +9,7 @@ const db = require('../../db')
 const { sanitizeFilename: sanitize } = require('../../utils')
 const {
   resolveComicDir, getPrimaryDownloadRoot,
-  findChapterDir, getValidChapterImages, listChapterImages,
+  findChapterDir, getValidChapterImages, getValidChapterImagesCached, listChapterImages,
   downloadChapterImages, downloadBuf,
   getGlobalDownloadConcurrency
 } = require('../downloadPaths')
@@ -27,7 +27,7 @@ async function downloadCoverIfNeeded(comicDir, coverUrl, referer) {
 async function checkChapterAlreadyDownloaded(comicDir, chapterIndex, chapterName, comicTitle, sourceUrl, usedDirs) {
   const chDirOnDisk = findChapterDir(comicDir, chapterIndex, chapterName, usedDirs)
   if (chDirOnDisk) {
-    const validFiles = await getValidChapterImages(chDirOnDisk)
+    const { validFiles } = await getValidChapterImagesCached(chDirOnDisk)
     const allFiles = listChapterImages(chDirOnDisk)
     const corruptCount = allFiles.length - validFiles.length
     if (validFiles.length > 0 && corruptCount === 0) {
@@ -48,7 +48,7 @@ async function checkChapterAlreadyDownloaded(comicDir, chapterIndex, chapterName
     (r.comicId === sourceUrl || r.comicId === comicTitle) && r.chapterIndex === chapterIndex
   )
   if (already && already.path && fs.existsSync(already.path)) {
-    const validFiles = await getValidChapterImages(already.path)
+    const { validFiles } = await getValidChapterImagesCached(already.path)
     if (validFiles.length > 0) {
       return { skipped: true, validFiles: validFiles.length }
     }
@@ -89,6 +89,24 @@ async function saveChapterResult(chapterIndex, chapterName, comicTitle, sourceUr
       try { await db.resetUpdateDelta(sourceUrl) } catch (_) {}
     }
   }
+  // 下载完成的章: 每张图都已由 sharpPool.webpConvert 真解析过图头且正常,
+  // 立即写入 per-image sharp 缓存, 标记全部 OK, 避免 sync 二次 sharp 校验同一批图。
+  try {
+    if (result.failedImages && result.failedImages.length) {
+      // 有失败图: 不写全 OK 缓存, 让后续校验重新 sharp 失败图
+    } else {
+      const { saveSharpCache } = require('../downloadPaths')
+      const entries = {}
+      const files = listChapterImages(chDir)
+      for (const f of files) {
+        try {
+          const st = fs.statSync(f)
+          entries[path.basename(f)] = { size: st.size, mtime: Math.round(st.mtimeMs), ok: true }
+        } catch (_) {}
+      }
+      saveSharpCache(chDir, { entries })
+    }
+  } catch (_) {}
 }
 
 async function jobHandlerDownloadChapter(job, onProgress) {
