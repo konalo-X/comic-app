@@ -19,7 +19,15 @@ const { jobHandlerAutoEnrich, jobHandlerEnrichImageCounts } = require('./enrich'
 const { jobHandlerDownloadChapter, jobHandlerDownloadComic } = require('./download')
 const { jobHandlerRepairComic, autoRepairDownloadedComics } = require('./repair')
 
+let _jobQueueInitialized = false
+
 function initJobQueue() {
+  if (_jobQueueInitialized) {
+    console.log('[JobQueue] 已经初始化，跳过重复调用')
+    return
+  }
+  _jobQueueInitialized = true
+
   let concurrency = 5
   try {
     const stored = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf-8'))
@@ -99,7 +107,14 @@ function initJobQueue() {
   jobQueue.on('retried', (data) => notifyQueueChanged('retried', data))
 }
 
+let _autoTasksStarted = false
+
 function startAutoTasks() {
+  if (_autoTasksStarted) {
+    console.log('[Auto] 自动任务已经启动，跳过重复调用')
+    return
+  }
+  _autoTasksStarted = true
   stopAutoTasks()
   let autoUpdateEnabled = true
   let autoUpdateIntervalHours = 2
@@ -228,6 +243,7 @@ function startAutoTasks() {
 }
 
 function stopAutoTasks() {
+  _autoTasksStarted = false
   const autoTimers = getAutoTimers()
   for (const t of autoTimers) {
     clearTimeout(t)

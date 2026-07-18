@@ -715,7 +715,7 @@ function downloadBuf(imageUrl, referer, timeoutMs = 30000) {
         clearTimeout(resTimeout)
         settled = true
         req.destroy()
-        reject(e)
+        reject(new Error(`Response error: ${(e && (e.message || e.code)) || String(e)}`))
       })
     })
     let reqTimeout = setTimeout(() => {
@@ -735,7 +735,12 @@ function downloadBuf(imageUrl, referer, timeoutMs = 30000) {
       if (settled) return
       clearTimeout(reqTimeout)
       settled = true
-      reject(e)
+      // e 通常是 Node.js 系统错误对象（含 code/errno/syscall），但 message 可能为空或不友好
+      // 将其包装为可读的 Error，同时保留原始 code
+      const code = (e && e.code) || ''
+      const rawMsg = (e && e.message) || ''
+      const friendly = code ? `网络请求失败: ${code} ${rawMsg}`.trim() : (rawMsg || '网络请求失败: 未知错误')
+      reject(new Error(friendly))
     })
   })
 }

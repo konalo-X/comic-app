@@ -14,15 +14,21 @@ function register(deps) {
 
   const jq = deps.jq
 
+  // 防重入：跟踪正在进行的下载 IPC 请求，防止重复注册监听器
+  const _pendingDownloads = new Map()
+
   // 全局下载进度转发: 不仅用户手动下载, sync 自动追更的 downloadChapter/downloadComic
   // 任务进度(含网速 speed)也广播给前端 footer, 避免状态栏网速永远显示 0。
   // 延迟注册: register() 同步执行时 jobQueue 可能尚未就绪, 用 getJobQueue() 惰性获取。
+  let _globalProgressForwarderRegistered = false
   const registerGlobalProgressForward = () => {
+    if (_globalProgressForwarderRegistered) return
     const q = (deps.getJobQueue && deps.getJobQueue()) || deps.jq
     if (!q || typeof q.on !== 'function') {
       setTimeout(registerGlobalProgressForward, 1000)
       return
     }
+    _globalProgressForwarderRegistered = true
     q.on('progress', (data) => {
       if (!data || (data.type !== 'downloadChapter' && data.type !== 'downloadComic')) return
       const win = BrowserWindow.getAllWindows()[0]
@@ -126,14 +132,58 @@ function register(deps) {
 
     const comicDir = resolveComicDirForPayload(comicTitle, sourceUrl)
 
+    // 防重：如果同一章节已有正在进行的请求，复用现有 Promise
+    const pendingKey = `chapter:${sourceUrl}:${chapter.index}`
+    if (_pendingDownloads.has(pendingKey)) {
+      console.log(`[queueChapter] 已有相同请求在进行中，复用现有 Promise: ${pendingKey}`)
+      return _pendingDownloads.get(pendingKey)
+    }
+
     const id = jq.add('downloadChapter', { comicTitle, chapter, referer, sourceUrl, coverUrl, comicDir }, { priority: 0 })
-    const unsub = jq.on('progress', (data) => {
-      if (data.jobId === id && win) win.webContents.send('download:jobProgress', data)
+
+    const promise = new Promise((resolve) => {
+      let resolved = false
+      function cleanup() {
+        _pendingDownloads.delete(pendingKey)
+      }
+
+      const unsub = jq.on('progress', (data) => {
+        if (!resolved && data.jobId === id && win) {
+          win.webContents.send('download:jobProgress', data)
+        }
+      })
+      const unsub2 = jq.on('completed', (data) => {
+        if (!resolved && data.jobId === id && win) {
+          resolved = true
+          win.webContents.send('download:jobDone', data.result)
+          unsub(); unsub2()
+          cleanup()
+          resolve({ jobId: id, result: data.result })
+        }
+      })
+      const unsub3 = jq.on('failed', (data) => {
+        if (!resolved && data.jobId === id && win) {
+          resolved = true
+          win.webContents.send('download:jobDone', { error: data.error, jobId: id })
+          unsub(); unsub2(); unsub3()
+          cleanup()
+          resolve({ jobId: id, error: data.error })
+        }
+      })
+
+      // 安全兜底：30秒后如果还没完成，清理监听器
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true
+          unsub(); unsub2(); unsub3()
+          cleanup()
+          resolve({ jobId: id })
+        }
+      }, 30000)
     })
-    const unsub2 = jq.on('completed', (data) => {
-      if (data.jobId === id && win) { win.webContents.send('download:jobDone', data.result); unsub(); unsub2() }
-    })
-    return { jobId: id }
+
+    _pendingDownloads.set(pendingKey, promise)
+    return promise
   })
   ipcMain.handle('download:queueAllChapters', async (event, opts) => {
     let { comicTitle, chapters, referer, sourceUrl, coverUrl } = opts
@@ -159,17 +209,61 @@ function register(deps) {
 
     const comicDir = resolveComicDirForPayload(comicTitle, sourceUrl)
 
+    // 防重：如果同一漫画已有正在进行的整本下载请求，复用现有 Promise
+    const pendingKey = `comic:${sourceUrl || comicTitle}`
+    if (_pendingDownloads.has(pendingKey)) {
+      console.log(`[queueAllChapters] 已有相同请求在进行中，复用现有 Promise: ${pendingKey}`)
+      return _pendingDownloads.get(pendingKey)
+    }
+
     const id = jq.add('downloadComic', {
       comicTitle, chapters, referer, sourceUrl, coverUrl, comicDir
     }, { priority: 0 })
     console.log(`[queueAllChapters] 创建任务: id=${id}, comicTitle=${comicTitle}, chapters=${chapters.length}, comicDir=${comicDir}`)
-    const unsub = jq.on('progress', (data) => {
-      if (data.jobId === id && win) win.webContents.send('download:jobProgress', data)
+
+    const promise = new Promise((resolve) => {
+      let resolved = false
+      function cleanup() {
+        _pendingDownloads.delete(pendingKey)
+      }
+
+      const unsub = jq.on('progress', (data) => {
+        if (!resolved && data.jobId === id && win) {
+          win.webContents.send('download:jobProgress', data)
+        }
+      })
+      const unsub2 = jq.on('completed', (data) => {
+        if (!resolved && data.jobId === id && win) {
+          resolved = true
+          win.webContents.send('download:jobDone', data.result)
+          unsub(); unsub2()
+          cleanup()
+          resolve({ jobIds: [id], count: chapters.length, result: data.result })
+        }
+      })
+      const unsub3 = jq.on('failed', (data) => {
+        if (!resolved && data.jobId === id && win) {
+          resolved = true
+          win.webContents.send('download:jobDone', { error: data.error, jobId: id })
+          unsub(); unsub2(); unsub3()
+          cleanup()
+          resolve({ jobIds: [id], count: chapters.length, error: data.error })
+        }
+      })
+
+      // 安全兜底：5分钟后如果还没完成，清理监听器（整本下载可能较长）
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true
+          unsub(); unsub2(); unsub3()
+          cleanup()
+          resolve({ jobIds: [id], count: chapters.length })
+        }
+      }, 300000)
     })
-    const unsub2 = jq.on('completed', (data) => {
-      if (data.jobId === id && win) { win.webContents.send('download:jobDone', data.result); unsub(); unsub2() }
-    })
-    return { jobIds: [id], count: chapters.length }
+
+    _pendingDownloads.set(pendingKey, promise)
+    return promise
   })
 
   // --- 下载暂停/恢复 ---

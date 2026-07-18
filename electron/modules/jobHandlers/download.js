@@ -66,17 +66,34 @@ async function checkChapterAlreadyDownloaded(comicDir, chapterIndex, chapterName
 
 async function downloadChapterCore(job, comicDir, chapter, chapterIndex, comicTitle, sourceUrl, referer, onProgress) {
   const src = sources.default
-  const pageList = await src.getPageList(chapter.url, referer || sourceUrl)
+  let pageList
+  try {
+    pageList = await src.getPageList(chapter.url, referer || sourceUrl)
+  } catch (e) {
+    const cause = (e && e.message) || String(e) || '获取页面列表失败'
+    throw new Error(`获取章节页面列表失败 (${comicTitle} › 第${chapterIndex + 1}章 ${chapter.name || ''}): ${cause}`)
+  }
   const images = Array.isArray(pageList) ? pageList : pageList.images
   const chapterName = Array.isArray(pageList) ? '' : (pageList.chapterName || '')
-  if (!images || !images.length) throw new Error('无图片')
+  if (!images || !images.length) {
+    throw new Error(`章节无图片数据 (${comicTitle} › 第${chapterIndex + 1}章 ${chapter.name || ''})`)
+  }
 
   const folder = sanitize(`${chapterIndex + 1}-${chapterName}`)
   const chDir = path.join(comicDir, folder)
-  if (!fs.existsSync(chDir)) fs.mkdirSync(chDir, { recursive: true })
+  try {
+    if (!fs.existsSync(chDir)) fs.mkdirSync(chDir, { recursive: true })
+  } catch (e) {
+    throw new Error(`创建章节目录失败 (${chDir}): ${e.message || e}`)
+  }
 
-  const result = await downloadChapterImages(job, images, chDir, 0, comicTitle, chapterName, chapter, sourceUrl, onProgress)
-  return { result, chapterName, chDir }
+  try {
+    const result = await downloadChapterImages(job, images, chDir, 0, comicTitle, chapterName, chapter, sourceUrl, onProgress)
+    return { result, chapterName, chDir }
+  } catch (e) {
+    const cause = (e && e.message) || String(e) || '下载图片失败'
+    throw new Error(`下载章节图片失败 (${comicTitle} › 第${chapterIndex + 1}章): ${cause}`)
+  }
 }
 
 async function saveChapterResult(chapterIndex, chapterName, comicTitle, sourceUrl, result, chDir) {
@@ -148,7 +165,8 @@ async function jobHandlerDownloadChapter(job, onProgress) {
 
   const skipResult = await checkChapterAlreadyDownloaded(comicDir, chapter.index, actualChapterName, comicTitle, sourceUrl)
   if (skipResult.skipped) {
-    onProgress({ chapterIdx: chapter.index, current: 0, total: 0, downloaded: 0, done: true, skipped: true })
+    const validCount = skipResult.validFiles || 0
+    onProgress({ chapterIdx: chapter.index, current: validCount, total: validCount, downloaded: validCount, done: true, skipped: true })
     return { success: true, skipped: true, chapter: actualChapterName, chapterDir: skipResult.chDirOnDisk, comicTitle }
   }
 
@@ -200,8 +218,18 @@ async function jobHandlerDownloadComic(job, onProgress) {
     if (stored.downloadConcurrency) downloadConcurrency = stored.downloadConcurrency
   } catch (_) {}
 
-  const comicDir = resolveComicDir(comicTitle, sourceUrl, payloadComicDir)
-  await downloadCoverIfNeeded(comicDir, coverUrl, sourceUrl || referer)
+  let comicDir
+  try {
+    comicDir = resolveComicDir(comicTitle, sourceUrl, payloadComicDir)
+  } catch (e) {
+    throw new Error(`解析漫画目录失败 (${comicTitle}): ${e.message || e}`)
+  }
+  try {
+    await downloadCoverIfNeeded(comicDir, coverUrl, sourceUrl || referer)
+  } catch (e) {
+    // 封面失败不中断整本下载，仅记录
+    console.warn(`[下载] 封面下载失败 (${comicTitle}): ${e.message || e}`)
+  }
 
   let completed = 0
   const usedDirs = new Set()

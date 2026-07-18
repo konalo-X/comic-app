@@ -17,6 +17,18 @@ function notifyRefresh() {
   refreshCount.value++
 }
 
+// 防重入锁：防止自动任务链和用户手动操作同时触发
+let _crawlLock = false
+let _enrichLock = false
+let _checkLock = false
+let _enrichChaptersLock = false
+
+// 记录当前正在处理的任务 ID，防止重复处理同一任务的完成事件
+let _currentCrawlJobId = null
+let _currentEnrichJobId = null
+let _currentCheckJobId = null
+let _currentEnrichChaptersJobId = null
+
 // ===== IPC 监听器注册（用 window 级标志防止重复注册，避免 Vite HMR 问题）=====
 function initListeners() {
   if (!window || !window.crawlerApi) {
@@ -30,6 +42,10 @@ function initListeners() {
   console.log('[crawler] registering IPC listeners')
 
   window.crawlerApi.onProgress((data) => {
+    // 忽略不属于当前任务的历史进度消息
+    if (_currentCrawlJobId && data.jobId && data.jobId !== _currentCrawlJobId) {
+      return
+    }
     if (!state.crawling) {
       state.crawling = true
       state.progress = 0
@@ -46,9 +62,15 @@ function initListeners() {
   })
 
   window.crawlerApi.onDone((data) => {
+    // 防重：如果已经不在爬取状态，忽略这个事件（可能是重复事件或旧任务）
+    if (!state.crawling) {
+      console.log('[crawler] onDone ignored: not crawling')
+      return
+    }
     state.progress = 100
     state.message = `完成！共爬取 ${data?.pages || 0} 页，收录 ${data?.total || 0} 部漫画 → 正在补全标签...`
     state.result = data
+    _currentCrawlJobId = null
     notifyRefresh()
     // 自动触发：爬取完成 → 补全标签
     setTimeout(() => {
@@ -63,8 +85,13 @@ function initListeners() {
   })
 
   window.crawlerApi.onEnrichDone((data) => {
+    if (!state.enriching) {
+      console.log('[crawler] onEnrichDone ignored: not enriching')
+      return
+    }
     state.progress = 100
     state.message = (data?.msg || `补全完成！共处理 ${data?.total || 0} 部`) + ' → 正在章节增强...'
+    _currentEnrichJobId = null
     notifyRefresh()
     // 自动触发：补全完成 → 章节增强
     setTimeout(() => {
@@ -79,8 +106,13 @@ function initListeners() {
   })
 
   window.crawlerApi.onUpdateDone((data) => {
+    if (!state.checking) {
+      console.log('[crawler] onUpdateDone ignored: not checking')
+      return
+    }
     state.progress = 100
     state.message = data?.msg || `检查完成！更新 ${data?.updated || 0} 部`
+    _currentCheckJobId = null
     notifyRefresh()
     setTimeout(() => { state.checking = false }, 2500)
   })
@@ -91,7 +123,12 @@ function initListeners() {
     notifyRefresh()
   })
   window.crawlerApi.onEnrichChaptersDone((data) => {
+    if (!state.enrichingChapterNames) {
+      console.log('[crawler] onEnrichChaptersDone ignored: not enriching chapters')
+      return
+    }
     state.message = `章节增强完成！共处理 ${data?.processed || 0} 部，升级 ${data?.totalImgUpdated || 0} 章 → 正在检查更新...`
+    _currentEnrichChaptersJobId = null
     notifyRefresh()
     // 自动触发：章节增强完成 → 检查更新
     setTimeout(() => {
@@ -129,10 +166,11 @@ export async function startCrawl() {
     const ok = await waitForCrawlerApi()
     if (!ok) { alert('爬取功能尚未就绪'); return }
   }
-  if (state.crawling) {
+  if (_crawlLock || state.crawling) {
     console.log('[crawl] 已有爬取任务运行中，跳过')
     return
   }
+  _crawlLock = true
   state.crawling = true
   state.progress = 0
   state.message = '正在连接...'
@@ -147,11 +185,17 @@ export async function startCrawl() {
       state.message = '已有爬取任务运行中，正在同步进度...'
       // 不重置 crawling，让全局转发器推送进度
     }
+    if (result?.jobId) {
+      _currentCrawlJobId = result.jobId
+    }
   } catch (e) {
     console.error('[crawl] error:', e)
     state.message = '爬取出错: ' + (e.message || String(e))
     state.crawling = false
+    _currentCrawlJobId = null
     notifyRefresh()
+  } finally {
+    _crawlLock = false
   }
 }
 
@@ -160,18 +204,29 @@ export async function startEnrich(force = false) {
     const ok = await waitForCrawlerApi()
     if (!ok) { alert('爬取功能尚未就绪'); return }
   }
+  if (_enrichLock || state.enriching) {
+    console.log('[enrich] 已有补全任务运行中，跳过')
+    return
+  }
+  _enrichLock = true
   state.enriching = true
   state.progress = 0
   state.message = force ? '正在获取全部漫画（强制刷新）...' : '正在获取未打标签的漫画...'
   notifyRefresh()
 
   try {
-    await window.crawlerApi.enrich(force)
+    const result = await window.crawlerApi.enrich(force)
+    if (result?.jobId) {
+      _currentEnrichJobId = result.jobId
+    }
   } catch (e) {
     console.error('[enrich] error:', e)
     state.message = (force ? '刷新' : '补全') + '出错: ' + (e.message || String(e))
     state.enriching = false
+    _currentEnrichJobId = null
     notifyRefresh()
+  } finally {
+    _enrichLock = false
   }
 }
 
@@ -180,22 +235,29 @@ export async function startCheckUpdates() {
     const ok = await waitForCrawlerApi()
     if (!ok) { alert('爬取功能尚未就绪'); return }
   }
-  if (state.checking) {
+  if (_checkLock || state.checking) {
     console.log('[checkUpdates] 已有检查更新任务运行中，跳过')
     return
   }
+  _checkLock = true
   state.checking = true
   state.progress = 0
   state.message = '正在获取连载中的漫画...'
   notifyRefresh()
 
   try {
-    await window.crawlerApi.checkUpdates()
+    const result = await window.crawlerApi.checkUpdates()
+    if (result?.jobId) {
+      _currentCheckJobId = result.jobId
+    }
   } catch (e) {
     console.error('[checkUpdates] error:', e)
     state.message = '检查更新出错: ' + (e.message || String(e))
     state.checking = false
+    _currentCheckJobId = null
     notifyRefresh()
+  } finally {
+    _checkLock = false
   }
 }
 
@@ -204,18 +266,28 @@ export async function startEnrichChapters() {
     const ok = await waitForCrawlerApi()
     if (!ok) { alert('爬取功能尚未就绪'); return }
   }
-  if (state.enrichingChapterNames) return
+  if (_enrichChaptersLock || state.enrichingChapterNames) {
+    console.log('[enrichChapters] 已有章节增强任务运行中，跳过')
+    return
+  }
+  _enrichChaptersLock = true
   state.enrichingChapterNames = true
   state.message = '准备章节增强...'
   notifyRefresh()
 
   try {
-    await window.crawlerApi.enrichChapters()
+    const result = await window.crawlerApi.enrichChapters()
+    if (result?.jobId) {
+      _currentEnrichChaptersJobId = result.jobId
+    }
   } catch (e) {
     console.error('[enrichChapters] error:', e)
     state.message = '章节增强出错: ' + (e.message || String(e))
     state.enrichingChapterNames = false
+    _currentEnrichChaptersJobId = null
     notifyRefresh()
+  } finally {
+    _enrichChaptersLock = false
   }
 }
 

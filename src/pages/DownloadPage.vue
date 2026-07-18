@@ -87,14 +87,16 @@
               <div class="task-info">
                 <div class="task-title">{{ t.chapter }}</div>
                 <div class="row gap-8 mt-4">
-                  <span class="text-sub task-meta">{{ t.done }} / {{ t.total }} {{ t._unit || '页' }}</span>
+                  <span class="text-sub task-meta" v-if="t._hasProgress && t.total">{{ t.done }} / {{ t.total }} {{ t._unit || '页' }}</span>
+                  <span class="text-sub task-meta" v-else-if="t.status === 'downloading'">下载中...</span>
+                  <span class="text-sub task-meta" v-else>{{ t.statusText }}</span>
                   <span v-if="t.speed" class="text-sub task-meta">{{ t.speed }}</span>
                 </div>
               </div>
               <div class="progress-bar task-progress">
-                <div class="fill download" :style="{ width: pct(t) + '%' }"></div>
+                <div class="fill download" :style="{ width: (t._hasProgress && t.total ? pct(t) : 0) + '%' }"></div>
               </div>
-              <span class="task-status">{{ pct(t) }}%</span>
+              <span class="task-status">{{ t._hasProgress && t.total ? pct(t) : 0 }}%</span>
               <span :class="['task-status-text', statusCls(t)]">{{ t.statusText }}</span>
               <div class="row gap-4 task-actions">
                 <button v-if="t.status === 'downloading'" class="btn btn-secondary btn-sm" @click="pauseTask(t)">暂停</button>
@@ -592,9 +594,10 @@ onMounted(async () => {
           task._unit = '章'
         } else {
           task.done = data.downloaded || data.current || 0
-          task.total = data.total || 1
+          task.total = data.total || task.total || 0
           task._unit = '页'
         }
+        task._hasProgress = true
         task.status = 'downloading'
         task.statusText = '下载中'
       }
@@ -607,6 +610,8 @@ onMounted(async () => {
       if (task) {
         task.status = 'done'
         task.statusText = '已完成'
+        if (!task.total) task.total = task.done || 1
+        task._hasProgress = true
         task.done = task.total
         loadRecords()
       }
@@ -691,14 +696,29 @@ async function loadJobs() {
         status = 'paused'
         statusText = '暂停中'
       }
+      // 判断是否真的有进度数据
+      const hasProgress = j.progress != null && (j.progress.total != null || j.progress.current != null || j.progress.downloaded != null)
+      const hasDbProgress = j.progressTotal > 0 || j.progressCurrent > 0
+      const hasAnyProgress = hasProgress || hasDbProgress
+
+      let done, total
+      if (isComic) {
+        done = j.progress?.chapter != null ? j.progress.chapter : (j.progressCurrent || 0)
+        total = j.progress?.totalChapters != null ? j.progress.totalChapters : (j.progressTotal || (j.payload?.chapters?.length || 0))
+      } else {
+        done = j.progress?.downloaded != null ? j.progress.downloaded : (j.progressCurrent || 0)
+        total = j.progress?.total != null ? j.progress.total : j.progressTotal
+      }
+
       return {
         id: j.id,
         jobId: j.id,
         comic: getComicDisplayName(j.payload),
         chapter: getChapterDisplayName(j.payload, isComic),
-        done: isComic ? (j.progress?.chapter != null ? j.progress.chapter : (j.progressCurrent || 0)) : (j.progress?.downloaded != null ? j.progress.downloaded : (j.progressCurrent || 0)),
-        total: isComic ? (j.progress?.totalChapters != null ? j.progress.totalChapters : (j.progressTotal || (j.payload?.chapters?.length || 1))) : (j.progress?.total != null ? j.progress.total : (j.progressTotal || 1)),
+        done,
+        total,
         _unit: isComic ? '章' : '页',
+        _hasProgress: hasAnyProgress,
         status,
         statusText
       }

@@ -10,10 +10,25 @@ function register(deps) {
   const { deriveCategoryFromTags, enrichChapters, addSyncJob } = jobHandlers
 
   // 通用：创建单个作业的 IPC 处理器（避免重复的 Promise + 事件监听模板代码）
+  // 使用 Map 来跟踪每个 prefix 的正在进行的 Promise，防止重复注册监听器
+  const _pendingHandlers = new Map()
+
   function createJobHandler(prefix, addJobFn) {
     return async () => {
-      return new Promise((resolve, reject) => {
+      // 如果同一个 prefix 已经有正在进行的请求，返回同一个 Promise
+      if (_pendingHandlers.has(prefix)) {
+        console.log(`[${prefix}] 已有相同类型的请求在进行中，复用现有 Promise`)
+        return _pendingHandlers.get(prefix)
+      }
+
+      const promise = new Promise((resolve, reject) => {
+        let resolved = false
         let jobId = null
+
+        function cleanup() {
+          _pendingHandlers.delete(prefix)
+        }
+
         const unsub = jq.on('progress', (data) => {
           if (jobId && data.jobId === jobId) {
             BrowserWindow.getAllWindows().forEach(w => {
@@ -22,26 +37,35 @@ function register(deps) {
           }
         })
         const unsubDone = jq.on('completed', (data) => {
-          if (jobId && data.jobId === jobId) {
+          if (!resolved && jobId && data.jobId === jobId) {
+            resolved = true
             unsub(); unsubDone(); unsubFailed()
             BrowserWindow.getAllWindows().forEach(w => {
               if (!w.isDestroyed()) w.webContents.send(`${prefix}:done`, data.result)
             })
+            cleanup()
             resolve(data.result)
           }
         })
         const unsubFailed = jq.on('failed', (data) => {
-          if (jobId && data.jobId === jobId) {
+          if (!resolved && jobId && data.jobId === jobId) {
+            resolved = true
             unsub(); unsubDone(); unsubFailed()
+            cleanup()
             reject(new Error(data.error || '作业失败'))
           }
         })
         jobId = addJobFn()
         if (!jobId) {
+          resolved = true
           unsub(); unsubDone(); unsubFailed()
+          cleanup()
           reject(new Error('无法创建作业'))
         }
       })
+
+      _pendingHandlers.set(prefix, promise)
+      return promise
     }
   }
 
@@ -84,8 +108,17 @@ function register(deps) {
     globalCrawlForwarder = () => { unsubProgress(); unsubDone(); unsubFailed() }
   }
 
+  // crawl:all 防重入：同时只允许一个 Promise 等待
+  let _crawlAllPromise = null
+
   ipcMain.handle('crawl:all', async (event, startUrl) => {
     console.log('[crawl:all] handle called, startUrl=', startUrl)
+
+    // 如果已经有前端在等待这个 IPC 返回，直接返回已有 Promise 的结果
+    if (_crawlAllPromise) {
+      console.log('[crawl:all] 已有前端请求在等待，返回同一个 Promise')
+      return _crawlAllPromise
+    }
 
     const existing = jq.findByType('crawlAll')
     if (existing) {
@@ -95,28 +128,42 @@ function register(deps) {
 
     ensureGlobalCrawlForwarder()
 
-    return new Promise((resolve, reject) => {
+    _crawlAllPromise = new Promise((resolve, reject) => {
+      let resolved = false
       let jobId = null
+
+      function cleanup() {
+        _crawlAllPromise = null
+      }
+
       const unsubDone = jq.on('completed', (data) => {
-        if (jobId && data.jobId === jobId && data.type === 'crawlAll') {
+        if (!resolved && jobId && data.jobId === jobId && data.type === 'crawlAll') {
+          resolved = true
           unsubDone(); unsubFailed()
+          cleanup()
           resolve(data.result)
         }
       })
       const unsubFailed = jq.on('failed', (data) => {
-        if (jobId && data.jobId === jobId && data.type === 'crawlAll') {
+        if (!resolved && jobId && data.jobId === jobId && data.type === 'crawlAll') {
+          resolved = true
           unsubDone(); unsubFailed()
+          cleanup()
           reject(new Error(data.error || '作业失败'))
         }
       })
       jobId = jq.add('crawlAll', { startUrl }, { priority: 0 })
       if (!jobId) {
+        resolved = true
         unsubDone(); unsubFailed()
+        cleanup()
         reject(new Error('爬取任务被限速，请稍后再试（15分钟内只能爬取一次）'))
         return
       }
       console.log('[crawl:all] job added, id=', jobId)
     })
+
+    return _crawlAllPromise
   })
   ipcMain.handle('crawl:enrich', createJobHandler('enrich', () => addSyncJob(0)))
   ipcMain.handle('crawl:checkUpdates', createJobHandler('update', () => addSyncJob(0)))

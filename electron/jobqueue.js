@@ -760,7 +760,32 @@ class JobQueue {
   }
 
   _handleJobError(id, type, controller, e, retryCount, maxRetries) {
-    const error = e.message || String(e)
+    let error = ''
+    try {
+      if (e instanceof Error) {
+        error = e.message || e.name || String(e)
+      } else if (typeof e === 'string') {
+        error = e
+      } else if (e && typeof e === 'object') {
+        // 常见 Node.js 系统错误对象 (如 ECONNRESET, ENOENT) 有 code 字段
+        const parts = []
+        if (e.code) parts.push(String(e.code))
+        if (e.message) parts.push(String(e.message))
+        if (e.errno) parts.push('errno=' + e.errno)
+        if (e.syscall) parts.push('syscall=' + e.syscall)
+        if (parts.length === 0) {
+          try { parts.push(JSON.stringify(e).substring(0, 200)) } catch (_) { parts.push(String(e)) }
+        }
+        error = parts.join(' ')
+      } else {
+        error = String(e) || '未知异常'
+      }
+    } catch (_) {
+      error = '未知异常 (序列化失败)'
+    }
+    if (!error || error.trim().length === 0) {
+      error = '未知错误 (空错误信息)'
+    }
     const now = Date.now()
     const errorType = this._classifyError(error)
     this._recordFailureStats(errorType)
