@@ -78,6 +78,8 @@ const DEFAULT_TIMEOUT = 5 * 60 * 1000 // 5 分钟
 const DEFAULT_RETENTION_MS = 7 * 24 * 3600 * 1000 // 7 天
 const MAINTENANCE_INTERVAL = 60 * 1000 // 1 分钟
 const STALL_TIMEOUT = 10 * 60 * 1000 // 10 分钟无进度视为 stall
+const ZOMBIE_SCAN_COOLDOWN = 30 * 1000 // 僵尸扫描冷却 30s
+const CLEANUP_INTERVAL = 5 * 60 * 1000 // 清理过期记录间隔 5 分钟
 
 /**
  * 持久化作业队列 — 支持优先级、超时、延迟、重复、TTL 清理
@@ -113,6 +115,9 @@ class JobQueue {
     this._jobRetentionMs = options.jobRetentionMs ?? DEFAULT_RETENTION_MS
     this._defaultTimeout = options.defaultTimeout ?? DEFAULT_TIMEOUT
     this.autoRetryConfig = options.autoRetryConfig || {}
+
+    this._lastZombieScan = 0
+    this._lastCleanup = 0
 
     this._initTable()
     this._migrateSchema()
@@ -628,22 +633,25 @@ class JobQueue {
 
   async _tick() {
     // ============ 自愈: 复位卡死的 active 僵尸任务(无条件, 不受并发/暂停影响) ============
-    // 抢占/竞态可能让任务从内存 _active 删除但 DB 仍标 active, 且永不被重新调度 -> 死锁。
-    // 每轮检测: DB 标 active 但不在内存 _active, 且超过 15 分钟无进度更新 -> 复位为 waiting。
-    try {
-      const STALL_MS = 8 * 60 * 1000
-      const zombies = this.db.prepare(
-        `SELECT id FROM job_queue WHERE status IN ('active', 'running')
-         AND (last_progress_at IS NULL OR last_progress_at < ?)`
-      ).all(Date.now() - STALL_MS)
-      for (const z of zombies) {
-        if (this._active.has(z.id)) continue
-        if (this._running.has(z.id)) continue
-        this._updateStatus(z.id, 'waiting', { error: '自愈: 复位卡死的 active 僵尸任务' })
-        console.log(`[JobQueue] 自愈: 复位卡死任务 ${z.id.substring(0, 8)} (active -> waiting)`)
+    // 僵尸任务极少出现，30s 冷却避免每轮 tick 都无效 DB 查询
+    const now = Date.now()
+    if (now - this._lastZombieScan >= ZOMBIE_SCAN_COOLDOWN) {
+      this._lastZombieScan = now
+      try {
+        const STALL_MS = 8 * 60 * 1000
+        const zombies = this.db.prepare(
+          `SELECT id FROM job_queue WHERE status IN ('active', 'running')
+           AND (last_progress_at IS NULL OR last_progress_at < ?)`
+        ).all(now - STALL_MS)
+        for (const z of zombies) {
+          if (this._active.has(z.id)) continue
+          if (this._running.has(z.id)) continue
+          this._updateStatus(z.id, 'waiting', { error: '自愈: 复位卡死的 active 僵尸任务' })
+          console.log(`[JobQueue] 自愈: 复位卡死任务 ${z.id.substring(0, 8)} (active -> waiting)`)
+        }
+      } catch (e) {
+        console.warn('[JobQueue] 自愈扫描失败:', e.message)
       }
-    } catch (e) {
-      console.warn('[JobQueue] 自愈扫描失败:', e.message)
     }
 
     if (this._paused) return
@@ -663,33 +671,34 @@ class JobQueue {
     // 先检查最高优先级任务是否因互斥组被阻塞，是则抢占并等待下一轮
     if (this._tryMutexPreempt(waiting)) return
 
-    // 循环填满并发槽: 之前只 `await _executeJob(row)` 会一直等到整个任务跑完,
-    // 导致无论 concurrency 多大都只串行跑 1 个。现在不 await(启动时同步把任务加进 _active),
-    // 循环直到 active 填满或无可启动任务。
-    // activeTypeCounts 提到循环外: 每次迭代有任务启动才增量更新, 不每次全量重算。
+    // 循环填满并发槽: 不 await(启动时同步把任务加进 _active), 循环直到 active 填满或无可启动任务。
+    // 用 cursor 替代 waiting.find() 避免每轮从头扫描 (O(n) vs O(n × concurrency))
     const activeTypeCounts = {}
     for (const entry of this._active.values()) {
       const t = entry.job.type
       activeTypeCounts[t] = (activeTypeCounts[t] || 0) + 1
     }
+    let cursor = 0
     while (this._active.size < this.concurrency) {
-      const row = waiting.find(r => {
-        if (this._active.has(r.id)) return false
-        if (this._running.has(r.id)) return false
-        if (!this._canStart(r.type)) return false
+      let found = false
+      for (let i = cursor; i < waiting.length; i++) {
+        const r = waiting[i]
+        if (this._active.has(r.id)) continue
+        if (this._running.has(r.id)) continue
+        if (!this._canStart(r.type)) continue
         const typeMax = this.typeConcurrency[r.type]
         if (typeMax !== undefined && typeMax > 0) {
-          if ((activeTypeCounts[r.type] || 0) >= typeMax) return false
+          if ((activeTypeCounts[r.type] || 0) >= typeMax) continue
         } else {
-          if (activeTypeCounts[r.type] && r.priority > 1) return false
+          if (activeTypeCounts[r.type] && r.priority > 1) continue
         }
-        return true
-      })
-      if (!row) break
-      // 启动任务前先更新计数, 防止同一次 tick 里出现同类型并发超限
-      activeTypeCounts[row.type] = (activeTypeCounts[row.type] || 0) + 1
-      // 不 await: _executeJob 同步先 _updateStatus(active)+_active.set, 再异步跑 handler
-      this._executeJob(row)
+        activeTypeCounts[r.type] = (activeTypeCounts[r.type] || 0) + 1
+        this._executeJob(r)
+        cursor = i + 1
+        found = true
+        break
+      }
+      if (!found) break
     }
   }
 
@@ -1054,7 +1063,10 @@ class JobQueue {
 
   _cleanupExpiredJobs() {
     if (this._jobRetentionMs <= 0) return
-    const cutoff = Date.now() - this._jobRetentionMs
+    const now = Date.now()
+    if (now - this._lastCleanup < CLEANUP_INTERVAL) return
+    this._lastCleanup = now
+    const cutoff = now - this._jobRetentionMs
     try {
       const result = this.db.prepare(
         `DELETE FROM job_queue WHERE status IN ('completed', 'failed', 'cancelled') AND completed_at IS NOT NULL AND completed_at < ?`
