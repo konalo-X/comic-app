@@ -1109,6 +1109,7 @@ class JobQueue {
       this._maintenanceTimer = null
     }
     this._active.clear()
+    this._running.clear()
     this.listeners.clear()
   }
 }
