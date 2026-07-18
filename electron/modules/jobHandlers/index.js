@@ -18,6 +18,10 @@ const { jobHandlerCrawlAll } = require('./crawl')
 const { jobHandlerAutoEnrich, jobHandlerEnrichImageCounts } = require('./enrich')
 const { jobHandlerDownloadChapter, jobHandlerDownloadComic } = require('./download')
 const { jobHandlerRepairComic, autoRepairDownloadedComics } = require('./repair')
+const {
+  JOB_QUEUE, TYPE_CONCURRENCY, AUTO_RETRY, RATE_LIMITS,
+  MUTEX_GROUPS, SINGLETON_TYPES
+} = require('../../config')
 
 let _jobQueueInitialized = false
 
@@ -28,7 +32,7 @@ function initJobQueue() {
   }
   _jobQueueInitialized = true
 
-  let concurrency = 5
+  let concurrency = JOB_QUEUE.DEFAULT_CONCURRENCY
   try {
     const stored = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf-8'))
     if (stored.concurrency) concurrency = stored.concurrency
@@ -37,24 +41,16 @@ function initJobQueue() {
   const jobQueue = new JobQueue(db.getRawDB(), {
     concurrency,
     typeConcurrency: {
-      downloadChapter: getGlobalDownloadConcurrency() || 3,
-      downloadComic: 1,
-      sync: 1,
-      crawlAll: 1,
-      autoEnrich: 1,
-      enrichChapters: 1,
-      repairComic: 1
+      downloadChapter: getGlobalDownloadConcurrency() || TYPE_CONCURRENCY.downloadChapter,
+      downloadComic: TYPE_CONCURRENCY.downloadComic,
+      sync: TYPE_CONCURRENCY.sync,
+      crawlAll: TYPE_CONCURRENCY.crawlAll,
+      autoEnrich: TYPE_CONCURRENCY.autoEnrich,
+      enrichChapters: TYPE_CONCURRENCY.enrichChapters,
+      repairComic: TYPE_CONCURRENCY.repairComic
     },
-    singletonTypes: ['sync', 'crawlAll', 'autoEnrich', 'enrichChapters', 'repairComic'],
-    autoRetryConfig: {
-      downloadChapter: { delay: 5 * 60 * 1000, maxAutoRetries: 5, backoff: 1.5 },
-      downloadComic: { delay: 10 * 60 * 1000, maxAutoRetries: 3, backoff: 2 },
-      sync: { delay: 30 * 60 * 1000, maxAutoRetries: 3, backoff: 2 },
-      crawlAll: { delay: 5 * 60 * 1000, maxAutoRetries: 3, backoff: 2 },
-      autoEnrich: { delay: 30 * 60 * 1000, maxAutoRetries: 3, backoff: 2 },
-      repairComic: { delay: 60 * 60 * 1000, maxAutoRetries: 2, backoff: 2 },
-      enrichChapters: { delay: 30 * 60 * 1000, maxAutoRetries: 3, backoff: 2 }
-    }
+    singletonTypes: SINGLETON_TYPES,
+    autoRetryConfig: AUTO_RETRY
   })
   jobQueue.register('sync', jobHandlerSync)
   jobQueue.register('crawlAll', jobHandlerCrawlAll)
@@ -63,13 +59,9 @@ function initJobQueue() {
   jobQueue.register('downloadComic', jobHandlerDownloadComic)
   jobQueue.register('repairComic', jobHandlerRepairComic)
   jobQueue.register('enrichChapters', jobHandlerEnrichImageCounts)
-  jobQueue.registerMutexGroup('crawl', ['sync', 'crawlAll', 'repairComic'])
-  // autoEnrich / enrichChapters 是轻量元数据补全，不和 sync 互斥(否则自动续排会饿死 sync)
-  jobQueue.registerMutexGroup('enrich', ['autoEnrich', 'enrichChapters'])
-  jobQueue.rateLimits = {
-    crawlAll: { maxCount: 1, windowMs: 15 * 60 * 1000 },
-    sync: { maxCount: 1, windowMs: 10 * 60 * 1000 }
-  }
+  jobQueue.registerMutexGroup('crawl', MUTEX_GROUPS.crawl)
+  jobQueue.registerMutexGroup('enrich', MUTEX_GROUPS.enrich)
+  jobQueue.rateLimits = RATE_LIMITS
   setJobQueue(jobQueue)
   console.log('[JobQueue] 持久队列已初始化，并发数:', concurrency, ', 章节并发:', getGlobalDownloadConcurrency() || 3)
 

@@ -3,6 +3,8 @@
 const path = require('path')
 const fs = require('fs')
 const { app, BrowserWindow, protocol } = require('electron')
+const { initAutoUpdater } = require('./updater')
+const logger = require('../logger')
 
 async function startup(deps) {
   const {
@@ -31,6 +33,8 @@ async function startup(deps) {
 
   jobHandlers.initJobQueue()
   createWindow()
+
+  initAutoUpdater()
 
   // 关闭启动画面
   if (closeSplashWindow) {

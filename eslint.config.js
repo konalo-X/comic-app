@@ -4,13 +4,29 @@ import prettier from 'eslint-config-prettier'
 
 export default [
   {
-    ignores: ['node_modules/', 'dist/', 'release/', 'electron/']
+    ignores: ['node_modules/', 'dist/', 'release/', 'comic/']
   },
+  // ========== electron/ (CommonJS, Node.js) ==========
   {
+    files: ['electron/**/*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.node
+      },
+      ecmaVersion: 'latest',
+      sourceType: 'commonjs'
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+      'no-console': 'off'
+    }
+  },
+  // ========== src/ (ESM, Browser + Vue) ==========
+  {
+    files: ['src/**/*.{js,vue}'],
     languageOptions: {
       globals: {
         ...globals.browser,
-        ...globals.node,
         window: true
       },
       ecmaVersion: 'latest',

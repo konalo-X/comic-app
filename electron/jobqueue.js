@@ -1,6 +1,8 @@
 'use strict'
 const crypto = require('crypto')
 function uuidv4() { return crypto.randomUUID() }
+const { JOB_QUEUE } = require('./config')
+const logger = require('./logger')
 
 /**
  * @typedef {Object} Job
@@ -74,12 +76,12 @@ const ALERT_THRESHOLDS = {
   parse_error: 10
 }
 
-const DEFAULT_TIMEOUT = 5 * 60 * 1000 // 5 分钟
-const DEFAULT_RETENTION_MS = 7 * 24 * 3600 * 1000 // 7 天
-const MAINTENANCE_INTERVAL = 60 * 1000 // 1 分钟
-const STALL_TIMEOUT = 10 * 60 * 1000 // 10 分钟无进度视为 stall
-const ZOMBIE_SCAN_COOLDOWN = 30 * 1000 // 僵尸扫描冷却 30s
-const CLEANUP_INTERVAL = 5 * 60 * 1000 // 清理过期记录间隔 5 分钟
+const DEFAULT_TIMEOUT = JOB_QUEUE.DEFAULT_TIMEOUT
+const DEFAULT_RETENTION_MS = JOB_QUEUE.DEFAULT_RETENTION_MS
+const MAINTENANCE_INTERVAL = JOB_QUEUE.MAINTENANCE_INTERVAL
+const STALL_TIMEOUT = JOB_QUEUE.STALL_TIMEOUT
+const ZOMBIE_SCAN_COOLDOWN = JOB_QUEUE.ZOMBIE_SCAN_COOLDOWN
+const CLEANUP_INTERVAL = JOB_QUEUE.CLEANUP_INTERVAL
 
 /**
  * 持久化作业队列 — 支持优先级、超时、延迟、重复、TTL 清理
@@ -177,11 +179,11 @@ class JobQueue {
       for (const m of migrations) {
         if (!cols.includes(m.name)) {
           this.db.exec(m.sql)
-          console.log(`[JobQueue] 迁移: 添加列 ${m.name}`)
+          logger.info(`[JobQueue] 迁移: 添加列 ${m.name}`)
         }
       }
     } catch (e) {
-      console.warn('[JobQueue] 迁移失败:', e.message)
+      logger.warn('[JobQueue] 迁移失败:', e.message)
     }
   }
 
@@ -262,10 +264,10 @@ class JobQueue {
           recovered++
         }
       }
-      if (recovered > 0) console.log(`[JobQueue] 恢复 ${recovered} 个中断任务（active/running -> waiting）`)
-      if (exhausted > 0) console.log(`[JobQueue] ${exhausted} 个任务重试次数耗尽，标记为 failed`)
+      if (recovered > 0) logger.info(`[JobQueue] 恢复 ${recovered} 个中断任务（active/running -> waiting）`)
+      if (exhausted > 0) logger.info(`[JobQueue] ${exhausted} 个任务重试次数耗尽，标记为 failed`)
     } catch (e) {
-      console.warn('[JobQueue] _recover 失败（数据库可能只读）:', e.message)
+      logger.warn('[JobQueue] _recover 失败（数据库可能只读）:', e.message)
     }
     this._scheduleTick()
   }
@@ -315,7 +317,7 @@ class JobQueue {
         .run(errorType, count, Date.now())
       this._checkFailureAlerts(errorType)
     } catch (e) {
-      console.error('[JobQueue] 记录失败统计失败:', e.message)
+      logger.error('[JobQueue] 记录失败统计失败:', e.message)
     }
   }
 
@@ -329,7 +331,7 @@ class JobQueue {
     for (const stat of stats) {
       const threshold = ALERT_THRESHOLDS[stat.reason] || 100
       if (stat.count >= threshold) {
-        console.warn(`[JobQueue] [告警] ${stat.reason} 失败次数达到 ${stat.count} 次，超过阈值 ${threshold}`)
+        logger.warn(`[JobQueue] [告警] ${stat.reason} 失败次数达到 ${stat.count} 次，超过阈值 ${threshold}`)
         this._emit('alert', { type: 'failure_threshold', reason: stat.reason, count: stat.count, threshold })
       }
     }
@@ -347,7 +349,7 @@ class JobQueue {
   updateTypeConcurrency(concurrencyMap) {
     if (!concurrencyMap || typeof concurrencyMap !== 'object') return
     this.typeConcurrency = { ...this.typeConcurrency, ...concurrencyMap }
-    console.log(`[JobQueue] typeConcurrency 已更新:`, this.typeConcurrency)
+    logger.info(`[JobQueue] typeConcurrency 已更新:`, this.typeConcurrency)
   }
 
   // ============ 事件系统 ============
@@ -375,7 +377,7 @@ class JobQueue {
     try {
       payloadStr = JSON.stringify(payload)
     } catch (e) {
-      console.warn(`[JobQueue] 任务 ${type} payload 序列化失败，降级为空对象:`, e.message)
+      logger.warn(`[JobQueue] 任务 ${type} payload 序列化失败，降级为空对象:`, e.message)
     }
     this.db.prepare(`INSERT OR IGNORE INTO job_queue
       (id, type, priority, status, payload, max_retries, timeout, delay, repeat_interval, created_at, updated_at)
@@ -394,16 +396,16 @@ class JobQueue {
       if (existing) {
         const newPriority = opts.priority ?? 2
         if (newPriority >= existing.priority) {
-          console.log(`[JobQueue] 单例类型 ${type} 已有 priority=${existing.priority} 任务 ${existing.id.substring(0, 8)}，跳过重复入队（新 priority=${newPriority}）`)
+          logger.info(`[JobQueue] 单例类型 ${type} 已有 priority=${existing.priority} 任务 ${existing.id.substring(0, 8)}，跳过重复入队（新 priority=${newPriority}）`)
           return existing.id
         }
-        console.log(`[JobQueue] 单例抢占: ${type} priority=${newPriority} 替换现有 priority=${existing.priority} 任务 ${existing.id.substring(0, 8)}`)
+        logger.info(`[JobQueue] 单例抢占: ${type} priority=${newPriority} 替换现有 priority=${existing.priority} 任务 ${existing.id.substring(0, 8)}`)
         this.cancel(existing.id)
       }
     }
 
     if (opts.checkRateLimit !== false && !this.checkRateLimit(type)) {
-      console.log(`[JobQueue] 任务 ${type} 被速率限制，跳过入队`)
+      logger.info(`[JobQueue] 任务 ${type} 被速率限制，跳过入队`)
       return null
     }
 
@@ -435,14 +437,14 @@ class JobQueue {
       try {
         payloadStr = JSON.stringify(payloads[i])
       } catch (e) {
-        console.warn(`[JobQueue] addBatch[${i}] payload 序列化失败，降级为空对象:`, e.message)
+        logger.warn(`[JobQueue] addBatch[${i}] payload 序列化失败，降级为空对象:`, e.message)
       }
       stmt.run(id, type, opts.priority ?? 2, 'waiting', payloadStr,
         opts.maxRetries ?? 3, opts.timeout ?? null, null, null, now, now)
       ids.push(id)
     }
     if (payloads.length > maxBatch) {
-      console.log(`[JobQueue] ${type} 批量入队超过限制 ${maxBatch}，已截断（原 ${payloads.length}）`)
+      logger.info(`[JobQueue] ${type} 批量入队超过限制 ${maxBatch}，已截断（原 ${payloads.length}）`)
     }
     this._scheduleTick()
     if (ids.length > 0) this._emit('enqueued', { jobIds: ids, type, count: ids.length })
@@ -486,7 +488,7 @@ class JobQueue {
       active.controller._paused = true
       this._active.delete(jobId)
       this._emit('paused', { jobId })
-      console.log(`[JobQueue] 暂停活跃任务 ${jobId.substring(0, 8)}`)
+      logger.info(`[JobQueue] 暂停活跃任务 ${jobId.substring(0, 8)}`)
     } else {
       const result = this._updateStatus(jobId, 'paused', {}, 'AND status = \'waiting\'')
       if (result.changes > 0) this._emit('paused', { jobId })
@@ -496,7 +498,7 @@ class JobQueue {
   resumeJob(jobId) {
     const row = this.db.prepare(`SELECT type FROM job_queue WHERE id = ? AND status = 'paused'`).get(jobId)
     if (!row) {
-      console.warn(`[JobQueue] resumeJob 失败: ${jobId} 不存在或非 paused 状态`)
+      logger.warn(`[JobQueue] resumeJob 失败: ${jobId} 不存在或非 paused 状态`)
       return
     }
     if (this._singletonTypes.has(row.type)) {
@@ -504,7 +506,7 @@ class JobQueue {
         `SELECT id FROM job_queue WHERE type = ? AND status IN ('waiting', 'running', 'active', 'delayed') LIMIT 1`
       ).get(row.type)
       if (existing) {
-        console.warn(`[JobQueue] resumeJob 拒绝: 单例类型 ${row.type} 已有活跃任务 ${existing.id.substring(0, 8)}`)
+        logger.warn(`[JobQueue] resumeJob 拒绝: 单例类型 ${row.type} 已有活跃任务 ${existing.id.substring(0, 8)}`)
         return
       }
     }
@@ -520,7 +522,7 @@ class JobQueue {
       active.controller.cancelled = true
       active.controller._cancelled = true
       this._active.delete(jobId)
-      console.log(`[JobQueue] 取消活跃任务 ${jobId.substring(0, 8)}`)
+      logger.info(`[JobQueue] 取消活跃任务 ${jobId.substring(0, 8)}`)
       this._waitingDirty = true
       this._scheduleTick()
     }
@@ -592,7 +594,7 @@ class JobQueue {
       this._updateStatus(id, 'waiting', { error: '被高优先级任务抢占, 复位等待重跑' })
       this._waitingDirty = true
     } catch (e) {
-      console.warn('[JobQueue] 抢占复位失败:', e.message)
+      logger.warn('[JobQueue] 抢占复位失败:', e.message)
     }
   }
 
@@ -601,7 +603,7 @@ class JobQueue {
     if (type) {
       const conflict = this._getMutexConflictingTask(type)
       if (conflict && conflict.entry.job.priority > newPriority) {
-        console.log(`[JobQueue] 抢占(互斥): 暂停 ${conflict.entry.job.type}(p=${conflict.entry.job.priority}) 为 ${type}(p=${newPriority}) 腾出位置`)
+        logger.info(`[JobQueue] 抢占(互斥): 暂停 ${conflict.entry.job.type}(p=${conflict.entry.job.priority}) 为 ${type}(p=${newPriority}) 腾出位置`)
         conflict.entry.controller.cancelled = true
         conflict.entry.controller._cancelled = true
         conflict.entry.controller._preempted = true
@@ -620,7 +622,7 @@ class JobQueue {
       }
     }
     if (lowestEntry) {
-      console.log(`[JobQueue] 抢占: 暂停 priority=${lowestPriority} 任务 ${lowestEntry.job.id.substring(0, 8)}，为 priority=${newPriority} 腾出位置`)
+      logger.info(`[JobQueue] 抢占: 暂停 priority=${lowestPriority} 任务 ${lowestEntry.job.id.substring(0, 8)}，为 priority=${newPriority} 腾出位置`)
       lowestEntry.controller.cancelled = true
       lowestEntry.controller._cancelled = true
       lowestEntry.controller._preempted = true
@@ -651,10 +653,10 @@ class JobQueue {
           if (this._active.has(z.id)) continue
           if (this._running.has(z.id)) continue
           this._updateStatus(z.id, 'waiting', { error: '自愈: 复位卡死的 active 僵尸任务' })
-          console.log(`[JobQueue] 自愈: 复位卡死任务 ${z.id.substring(0, 8)} (active -> waiting)`)
+          logger.info(`[JobQueue] 自愈: 复位卡死任务 ${z.id.substring(0, 8)} (active -> waiting)`)
         }
       } catch (e) {
-        console.warn('[JobQueue] 自愈扫描失败:', e.message)
+        logger.warn('[JobQueue] 自愈扫描失败:', e.message)
       }
     }
 
@@ -713,7 +715,7 @@ class JobQueue {
 
     const conflict = this._getMutexConflictingTask(top.type)
     if (conflict && conflict.entry.job.priority > top.priority) {
-      console.log(`[JobQueue] 互斥抢占: 暂停 ${conflict.entry.job.type}(p=${conflict.entry.job.priority}) 为 ${top.type}(p=${top.priority}) 腾出位置`)
+      logger.info(`[JobQueue] 互斥抢占: 暂停 ${conflict.entry.job.type}(p=${conflict.entry.job.priority}) 为 ${top.type}(p=${top.priority}) 腾出位置`)
       conflict.entry.controller.cancelled = true
       conflict.entry.controller._cancelled = true
       conflict.entry.controller._preempted = true
@@ -729,7 +731,7 @@ class JobQueue {
     try {
       payload = JSON.parse(payloadStr)
     } catch (e) {
-      console.warn(`[JobQueue] 任务 ${id.substring(0, 8)} (${type}) payload 解析失败，标记为 failed`)
+      logger.warn(`[JobQueue] 任务 ${id.substring(0, 8)} (${type}) payload 解析失败，标记为 failed`)
       this._updateStatus(id, 'failed', { error: `payload 损坏: ${e.message}` })
       this._scheduleTick()
       return
@@ -742,7 +744,7 @@ class JobQueue {
     }
 
     if (this._running.has(id)) {
-      console.log(`[JobQueue] 任务 ${id.substring(0, 8)} (${type}) 的旧 handler 仍在运行，跳过重新执行`)
+      logger.info(`[JobQueue] 任务 ${id.substring(0, 8)} (${type}) 的旧 handler 仍在运行，跳过重新执行`)
       this._scheduleTick()
       return
     }
@@ -753,7 +755,7 @@ class JobQueue {
         if (entryId !== id && entry.job.type === type) hasActiveSibling = true
       })
       if (hasActiveSibling) {
-        console.log(`[JobQueue] 单例类型 ${type} 已有其他任务运行中，跳过执行 ${id.substring(0, 8)}`)
+        logger.info(`[JobQueue] 单例类型 ${type} 已有其他任务运行中，跳过执行 ${id.substring(0, 8)}`)
         this._updateStatus(id, 'waiting')
         this._scheduleTick()
         return
@@ -866,7 +868,7 @@ class JobQueue {
         controller._cancelled = true
       }
       if (e.message && e.message.includes('任务超时')) {
-        console.warn(`[JobQueue] 任务 ${jobId.substring(0, 8)} (${type}) 超时 (${timeoutMs / 1000}s)`)
+        logger.warn(`[JobQueue] 任务 ${jobId.substring(0, 8)} (${type}) 超时 (${timeoutMs / 1000}s)`)
       }
       throw e
     } finally {
@@ -880,13 +882,13 @@ class JobQueue {
     const preempted = controller._preempted
 
     if (paused) {
-      console.log(`[JobQueue] 任务 ${id} (${type}) 已被外部暂停，状态保持 paused`)
+      logger.info(`[JobQueue] 任务 ${id} (${type}) 已被外部暂停，状态保持 paused`)
     } else if (preempted) {
       this._updateStatus(id, 'waiting')
       this._emit('paused', { jobId: id, type, reason: 'preempted' })
-      console.log(`[JobQueue] 任务 ${id} (${type}) 被抢占，已回到等待队列`)
+      logger.info(`[JobQueue] 任务 ${id} (${type}) 被抢占，已回到等待队列`)
     } else if (cancelled) {
-      console.log(`[JobQueue] 任务 ${id} (${type}) 已被取消或超时，状态保持 cancelled`)
+      logger.info(`[JobQueue] 任务 ${id} (${type}) 已被取消或超时，状态保持 cancelled`)
     } else {
       this._updateStatus(id, 'completed', {
         result: typeof result === 'string' ? result : JSON.stringify(result),
@@ -952,7 +954,7 @@ class JobQueue {
       `SELECT id FROM job_queue WHERE type = ? AND status IN ('waiting', 'running', 'active', 'paused', 'delayed') LIMIT 1`
     ).get(type)
     if (existing) {
-      console.log(`[JobQueue] 重复任务 ${type} 已有活跃实例，跳过`)
+      logger.info(`[JobQueue] 重复任务 ${type} 已有活跃实例，跳过`)
       return
     }
 
@@ -962,7 +964,7 @@ class JobQueue {
       repeat: job.repeatInterval,
       maxRetries: 3
     })
-    console.log(`[JobQueue] 重复任务 ${type} 已安排，${job.repeatInterval / 1000}s 后执行`)
+    logger.info(`[JobQueue] 重复任务 ${type} 已安排，${job.repeatInterval / 1000}s 后执行`)
   }
 
   _scheduleAutoRetry(id, type) {
@@ -978,7 +980,7 @@ class JobQueue {
     const maxAutoRetries = config.maxAutoRetries || 3
 
     if (autoRetryCount >= maxAutoRetries) {
-      console.log(`[JobQueue] ${type} 自动重试已达上限 (${autoRetryCount}/${maxAutoRetries})，放弃`)
+      logger.info(`[JobQueue] ${type} 自动重试已达上限 (${autoRetryCount}/${maxAutoRetries})，放弃`)
       return
     }
 
@@ -991,7 +993,7 @@ class JobQueue {
       `UPDATE job_queue SET auto_retry_count = ?, retry_count = 0, error = NULL, updated_at = ? WHERE id = ?`
     ).run(newAutoRetryCount, Date.now(), id)
 
-    console.log(`[JobQueue] ${type} 自动重试 #${newAutoRetryCount}/${maxAutoRetries}，${Math.round(delay / 60000)} 分钟后执行`)
+    logger.info(`[JobQueue] ${type} 自动重试 #${newAutoRetryCount}/${maxAutoRetries}，${Math.round(delay / 60000)} 分钟后执行`)
     this._emit('autoRetryScheduled', { jobId: id, type, attempt: newAutoRetryCount, maxAutoRetries, delayMs: delay })
   }
 
@@ -1022,7 +1024,7 @@ class JobQueue {
       if (r.updated_at && (r.updated_at + delay) > now) continue
 
       const newAutoRetryCount = autoRetryCount + 1
-      console.log(`[JobQueue] 自动重试失败任务 ${r.id.substring(0, 8)} (${r.type}) #${newAutoRetryCount}/${maxAutoRetries}`)
+      logger.info(`[JobQueue] 自动重试失败任务 ${r.id.substring(0, 8)} (${r.type}) #${newAutoRetryCount}/${maxAutoRetries}`)
       this.db.prepare(
         `UPDATE job_queue SET status = 'waiting', retry_count = 0, error = NULL, auto_retry_count = ?, updated_at = ? WHERE id = ?`
       ).run(newAutoRetryCount, now, r.id)
@@ -1031,7 +1033,7 @@ class JobQueue {
     }
 
     if (retried > 0) {
-      console.log(`[JobQueue] 自动重试了 ${retried} 个失败任务`)
+      logger.info(`[JobQueue] 自动重试了 ${retried} 个失败任务`)
       this._scheduleTick()
     }
   }
@@ -1058,11 +1060,11 @@ class JobQueue {
         for (const r of rows) {
           this._updateStatus(r.id, 'waiting')
         }
-        console.log(`[JobQueue] 激活 ${rows.length} 个延迟任务`)
+        logger.info(`[JobQueue] 激活 ${rows.length} 个延迟任务`)
         this._scheduleTick()
       }
     } catch (e) {
-      console.warn('[JobQueue] 激活延迟任务失败:', e.message)
+      logger.warn('[JobQueue] 激活延迟任务失败:', e.message)
     }
   }
 
@@ -1077,10 +1079,10 @@ class JobQueue {
         `DELETE FROM job_queue WHERE status IN ('completed', 'failed', 'cancelled') AND completed_at IS NOT NULL AND completed_at < ?`
       ).run(cutoff)
       if (result.changes > 0) {
-        console.log(`[JobQueue] 清理 ${result.changes} 个过期记录（> ${Math.round(this._jobRetentionMs / 86400000)} 天）`)
+        logger.info(`[JobQueue] 清理 ${result.changes} 个过期记录（> ${Math.round(this._jobRetentionMs / 86400000)} 天）`)
       }
     } catch (e) {
-      console.warn('[JobQueue] 清理过期记录失败:', e.message)
+      logger.warn('[JobQueue] 清理过期记录失败:', e.message)
     }
   }
 
@@ -1094,7 +1096,7 @@ class JobQueue {
       for (const job of stalled) {
         const active = this._active.get(job.id)
         if (active) {
-          console.warn(`[JobQueue] 检测到停滞任务 ${job.id.substring(0, 8)} (${job.type})，强制取消`)
+          logger.warn(`[JobQueue] 检测到停滞任务 ${job.id.substring(0, 8)} (${job.type})，强制取消`)
           active.controller.cancelled = true
           active.controller._cancelled = true
           this._active.delete(job.id)
@@ -1106,7 +1108,7 @@ class JobQueue {
         this._scheduleTick()
       }
     } catch (e) {
-      console.warn('[JobQueue] 停滞检测失败:', e.message)
+      logger.warn('[JobQueue] 停滞检测失败:', e.message)
     }
   }
 

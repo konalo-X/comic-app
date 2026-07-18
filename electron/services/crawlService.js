@@ -1,6 +1,8 @@
 'use strict'
 
 const { sleep } = require('../utils')
+const { CRAWL } = require('../config')
+const logger = require('../logger')
 
 function createCrawlService({ db, sources, jobQueue }) {
   const source = sources.default
@@ -15,10 +17,10 @@ function createCrawlService({ db, sources, jobQueue }) {
   }
 
   async function crawlAll({ resumePage = 0, startUrl, onProgress, cancelled }) {
-    const MAX_EMPTY_PAGES = 3
-    const MAX_RETRY_PER_PAGE = 5
-    const PAGE_DELAY_MIN = 3000
-    const PAGE_DELAY_MAX = 6000
+    const MAX_EMPTY_PAGES = CRAWL.MAX_EMPTY_PAGES
+    const MAX_RETRY_PER_PAGE = CRAWL.MAX_RETRY_PER_PAGE
+    const PAGE_DELAY_MIN = CRAWL.PAGE_DELAY_MIN
+    const PAGE_DELAY_MAX = CRAWL.PAGE_DELAY_MAX
 
     let pageNum = resumePage
     let totalSaved = 0, totalNew = 0, totalSkipped = 0, totalFailedPages = 0
@@ -40,7 +42,7 @@ function createCrawlService({ db, sources, jobQueue }) {
       const result = await _fetchPage(source, pageNum, cancelled, MAX_RETRY_PER_PAGE)
       if (result === null) {
         totalFailedPages++
-        if (totalFailedPages >= 10) break
+        if (totalFailedPages >= CRAWL.MAX_FAILED_PAGES) break
         await _sleepWithCancel(PAGE_DELAY_MIN + Math.random() * (PAGE_DELAY_MAX - PAGE_DELAY_MIN), cancelled)
         continue
       }
@@ -51,7 +53,7 @@ function createCrawlService({ db, sources, jobQueue }) {
       if (totalCount > 0) reportedTotalCount = totalCount
 
       if (pageNum === 1 && (reportedTotalCount > 0 || knownTotalPages > 0)) {
-        console.log(`[crawlService] 网站报告：共 ${reportedTotalCount} 部漫画，${knownTotalPages} 页`)
+        logger.info(`[crawlService] 网站报告：共 ${reportedTotalCount} 部漫画，${knownTotalPages} 页`)
       }
 
       if (items.length > 0) {
@@ -101,7 +103,7 @@ function createCrawlService({ db, sources, jobQueue }) {
       } catch (e) {
         if (e.message === 'cancelled') return null
         const isConnReset = e.message?.includes('ECONNRESET')
-        console.warn(`[crawlService] 第 ${pageNum} 页第 ${retry + 1} 次失败:`, e.message)
+        logger.warn(`[crawlService] 第 ${pageNum} 页第 ${retry + 1} 次失败:`, e.message)
         if (retry < maxRetries - 1) {
           const waitMs = isConnReset ? (retry + 1) * 5000 + Math.random() * 3000 : (retry + 1) * 2000 + Math.random() * 1000
           await _sleepWithCancel(waitMs, cancelled)

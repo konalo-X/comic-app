@@ -12,9 +12,11 @@
     "build": "vite build && electron-builder",
     "build:web": "vite build",
     "start": "electron .",
-    "lint": "eslint src/ --fix",
-    "lint:check": "eslint src/",
-    "format": "prettier --write src/"
+    "lint": "eslint src/ electron/ --fix",
+    "lint:check": "eslint src/ electron/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --write src/ electron/"
   },
   "dependencies": {
     "@vueuse/core": "^14.3.0",
@@ -24,13 +26,14 @@
     "better-sqlite3": "^12.11.1",
     "cheerio": "^1.0.0-rc.12",
     "dompurify": "^3.4.11",
-    "nedb-promises": "^6.2.3",
+    "electron-updater": "^6.8.9",
     "pinia": "^3.0.4",
     "sharp": "^0.35.3",
     "sql.js": "^1.14.1",
     "uuid": "^14.0.1",
     "vue": "^3.4.0",
-    "vue-router": "^4.2.5"
+    "vue-router": "^4.2.5",
+    "vue-virtual-scroller": "^2.0.0-beta.8"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",
@@ -46,11 +49,17 @@
     "globals": "^17.7.0",
     "prettier": "^3.9.4",
     "vite": "^5.0.0",
+    "vitest": "^4.1.10",
     "wait-on": "^7.2.0"
   },
   "build": {
     "appId": "com.comic.app",
     "productName": "ComicApp",
+    "publish": {
+      "provider": "github",
+      "owner": "konalo-X",
+      "repo": "comic-app"
+    },
     "files": [
       "electron/**/*",
       "!electron/_test_match*.js",

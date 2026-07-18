@@ -9,6 +9,7 @@ const downloadIpc = require('./ipc/download')
 const crawlIpc = require('./ipc/crawl')
 const exportIpc = require('./ipc/export')
 const importIpc = require('./ipc/import')
+const { checkForUpdates, downloadUpdate, quitAndInstall } = require('./updater')
 
 function registerAllIPC(deps) {
   const {
@@ -418,6 +419,11 @@ function registerAllIPC(deps) {
   }
 
   ipcMain.handle('app:backgroundTasks', async () => getBackgroundTasks())
+
+  // ============ 自动更新 ============
+  ipcMain.handle('update:check', async () => checkForUpdates())
+  ipcMain.handle('update:download', async () => { downloadUpdate(); return true })
+  ipcMain.handle('update:install', async () => { quitAndInstall(); return true })
 
   const { getProxyPort } = require('../utils/proxyUrl')
   ipcMain.on('proxy:getPort', (event) => {
