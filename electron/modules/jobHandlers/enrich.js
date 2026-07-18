@@ -27,7 +27,14 @@ async function jobHandlerAutoEnrich(job, onProgress) {
     const promises = batch.map(async (comic, j) => {
       if (job.cancelled()) return
       try {
-        await new Promise(resolve => setTimeout(resolve, j * 1000))
+        if (j > 0) {
+          const delay = j * 1000
+          const start = Date.now()
+          while (Date.now() - start < delay) {
+            if (job.cancelled()) return
+            await new Promise(r => setTimeout(r, Math.min(500, delay - (Date.now() - start))))
+          }
+        }
         const source = comic.sourceUrl?.includes('smtt6') ? sources.get('smtt6') : sources.default
         const detail = await source.getDetail(comic.sourceUrl, job.cancelled)
 
@@ -57,7 +64,11 @@ async function jobHandlerAutoEnrich(job, onProgress) {
 
     if (i + BATCH_SIZE < total) {
       const delay = BATCH_DELAY_MIN + Math.random() * (BATCH_DELAY_MAX - BATCH_DELAY_MIN)
-      await new Promise(resolve => setTimeout(resolve, delay))
+      const start = Date.now()
+      while (Date.now() - start < delay) {
+        if (job.cancelled()) break
+        await new Promise(r => setTimeout(r, Math.min(500, delay - (Date.now() - start))))
+      }
     }
   }
 

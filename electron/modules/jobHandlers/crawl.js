@@ -4,6 +4,15 @@ const sources = require('../../sources/registry')
 const db = require('../../db')
 const { sleep } = require('../../utils')
 
+async function _sleepWithCancel(ms, cancelledFn) {
+  if (!cancelledFn) return sleep(ms)
+  const start = Date.now()
+  while (Date.now() - start < ms) {
+    if (cancelledFn()) throw new Error('cancelled')
+    await sleep(Math.min(500, ms - (Date.now() - start)))
+  }
+}
+
 async function jobHandlerCrawlAll(job, onProgress) {
   const source = sources.default
   let pageNum = 0, totalSaved = 0, totalNew = 0, totalSkipped = 0, totalFailedPages = 0
@@ -22,10 +31,13 @@ async function jobHandlerCrawlAll(job, onProgress) {
 
   onProgress({ page: 0, total: 0, msg: '正在连接服务器...' })
   try {
+    let warmupTimer = null
     await Promise.race([
       source.search('', 1, job.cancelled),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('预热超时')), 30000))
-    ])
+      new Promise((_, reject) => {
+        warmupTimer = setTimeout(() => reject(new Error('预热超时')), 30000)
+      })
+    ]).finally(() => { if (warmupTimer) clearTimeout(warmupTimer) })
     onProgress({ page: 0, total: 0, msg: '连接成功，开始爬取...' })
   } catch (e) {
     console.warn('[crawl] 预热失败（继续爬取）:', e.message)
@@ -66,7 +78,7 @@ async function jobHandlerCrawlAll(job, onProgress) {
             ? (retry + 1) * 5000 + Math.random() * 3000
             : (retry + 1) * 2000 + Math.random() * 1000
           console.log(`[crawl] 等待 ${Math.round(waitMs / 1000)} 秒后重试...`)
-          await sleep(waitMs)
+          try { await _sleepWithCancel(waitMs, job.cancelled) } catch (e) { if (e.message === 'cancelled') break }
         }
       }
     }
@@ -82,7 +94,7 @@ async function jobHandlerCrawlAll(job, onProgress) {
         console.warn('[crawl] 连续失败页数过多，停止爬取')
         break
       }
-      await sleep(PAGE_DELAY_MIN + Math.random() * (PAGE_DELAY_MAX - PAGE_DELAY_MIN))
+      try { await _sleepWithCancel(PAGE_DELAY_MIN + Math.random() * (PAGE_DELAY_MAX - PAGE_DELAY_MIN), job.cancelled) } catch (e) {}
       continue
     }
 
@@ -126,7 +138,7 @@ async function jobHandlerCrawlAll(job, onProgress) {
       })
     }
 
-    await sleep(PAGE_DELAY_MIN + Math.random() * (PAGE_DELAY_MAX - PAGE_DELAY_MIN))
+    try { await _sleepWithCancel(PAGE_DELAY_MIN + Math.random() * (PAGE_DELAY_MAX - PAGE_DELAY_MIN), job.cancelled) } catch (e) {}
   }
   console.log('[crawl] finished, pages=', pageNum, 'totalNew=', totalNew, 'skipped=', totalSkipped, 'failedPages=', totalFailedPages, 'reportedTotal=', reportedTotalCount, 'reportedPages=', knownTotalPages)
   return { total: totalSaved, pages: pageNum, skipped: totalSkipped, failed: totalFailedPages, reportedTotal: reportedTotalCount, reportedPages: knownTotalPages, msg: `新增 ${totalNew} 部，跳过 ${totalSkipped} 部，失败 ${totalFailedPages} 页` }

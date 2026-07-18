@@ -140,6 +140,9 @@ function register(deps) {
     globalCrawlForwarder = () => { unsubProgress(); unsubDone(); unsubFailed() }
   }
 
+  // --- 全局爬取/同步进度事件转发（确保所有任务的 progress/done/failed 都能到前端） ---
+  ensureGlobalCrawlForwarder()
+
   // crawl:all 防重入：同时只允许一个 Promise 等待
   let _crawlAllPromise = null
 

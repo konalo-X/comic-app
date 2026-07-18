@@ -361,10 +361,16 @@ class JobQueue {
     const priority = opts.priority ?? 2
     const delay = opts.delay || 0
     const status = delay > 0 ? 'delayed' : 'waiting'
+    let payloadStr = '{}'
+    try {
+      payloadStr = JSON.stringify(payload)
+    } catch (e) {
+      console.warn(`[JobQueue] 任务 ${type} payload 序列化失败，降级为空对象:`, e.message)
+    }
     this.db.prepare(`INSERT OR IGNORE INTO job_queue
       (id, type, priority, status, payload, max_retries, timeout, delay, repeat_interval, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(id, type, priority, status, JSON.stringify(payload),
+      .run(id, type, priority, status, payloadStr,
         opts.maxRetries ?? 3, opts.timeout ?? null, delay || null,
         opts.repeat ?? null, now, now)
     return { id, priority }
@@ -414,7 +420,13 @@ class JobQueue {
     }
     for (let i = 0; i < maxBatch; i++) {
       const id = uuidv4()
-      stmt.run(id, type, opts.priority ?? 2, 'waiting', JSON.stringify(payloads[i]),
+      let payloadStr = '{}'
+      try {
+        payloadStr = JSON.stringify(payloads[i])
+      } catch (e) {
+        console.warn(`[JobQueue] addBatch[${i}] payload 序列化失败，降级为空对象:`, e.message)
+      }
+      stmt.run(id, type, opts.priority ?? 2, 'waiting', payloadStr,
         opts.maxRetries ?? 3, opts.timeout ?? null, null, null, now, now)
       ids.push(id)
     }
@@ -642,12 +654,13 @@ class JobQueue {
     // 循环填满并发槽: 之前只 `await _executeJob(row)` 会一直等到整个任务跑完,
     // 导致无论 concurrency 多大都只串行跑 1 个。现在不 await(启动时同步把任务加进 _active),
     // 循环直到 active 填满或无可启动任务。
+    // activeTypeCounts 提到循环外: 每次迭代有任务启动才增量更新, 不每次全量重算。
+    const activeTypeCounts = {}
+    for (const entry of this._active.values()) {
+      const t = entry.job.type
+      activeTypeCounts[t] = (activeTypeCounts[t] || 0) + 1
+    }
     while (this._active.size < this.concurrency) {
-      const activeTypeCounts = {}
-      for (const entry of this._active.values()) {
-        const t = entry.job.type
-        activeTypeCounts[t] = (activeTypeCounts[t] || 0) + 1
-      }
       const row = waiting.find(r => {
         if (this._active.has(r.id)) return false
         if (this._running.has(r.id)) return false
@@ -661,6 +674,8 @@ class JobQueue {
         return true
       })
       if (!row) break
+      // 启动任务前先更新计数, 防止同一次 tick 里出现同类型并发超限
+      activeTypeCounts[row.type] = (activeTypeCounts[row.type] || 0) + 1
       // 不 await: _executeJob 同步先 _updateStatus(active)+_active.set, 再异步跑 handler
       this._executeJob(row)
     }
@@ -675,6 +690,7 @@ class JobQueue {
     if (conflict && conflict.entry.job.priority > top.priority) {
       console.log(`[JobQueue] 互斥抢占: 暂停 ${conflict.entry.job.type}(p=${conflict.entry.job.priority}) 为 ${top.type}(p=${top.priority}) 腾出位置`)
       conflict.entry.controller.cancelled = true
+      conflict.entry.controller._cancelled = true
       conflict.entry.controller._preempted = true
       this._active.delete(conflict.id)
       this._preemptReset(conflict.id)
@@ -684,7 +700,15 @@ class JobQueue {
 
   async _executeJob(row) {
     const { id, type, priority, payload: payloadStr, max_retries: maxRetries, retry_count: retryCount, timeout } = row
-    const payload = JSON.parse(payloadStr)
+    let payload
+    try {
+      payload = JSON.parse(payloadStr)
+    } catch (e) {
+      console.warn(`[JobQueue] 任务 ${id.substring(0, 8)} (${type}) payload 解析失败，标记为 failed`)
+      this._updateStatus(id, 'failed', { error: `payload 损坏: ${e.message}` })
+      this._scheduleTick()
+      return
+    }
     const handler = this.handlers.get(type)
     if (!handler) {
       this._updateStatus(id, 'failed', { error: `未知作业类型: ${type}` })
@@ -797,21 +821,30 @@ class JobQueue {
   async _runWithTimeout(promise, timeoutMs, controller, jobId, type) {
     if (!timeoutMs || timeoutMs <= 0) return promise
     let timedOut = false
-    const timer = new Promise((_, reject) =>
-      setTimeout(() => {
+    let timer = null
+    const timerPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => {
         timedOut = true
-        if (controller) controller.cancelled = true
+        if (controller) {
+          controller.cancelled = true
+          controller._cancelled = true
+        }
         reject(new Error(`任务超时 (${timeoutMs / 1000}s)`))
       }, timeoutMs)
-    )
+    })
     try {
-      return await Promise.race([promise, timer])
+      return await Promise.race([promise, timerPromise])
     } catch (e) {
-      if (timedOut && controller) controller.cancelled = true
+      if (timedOut && controller) {
+        controller.cancelled = true
+        controller._cancelled = true
+      }
       if (e.message && e.message.includes('任务超时')) {
         console.warn(`[JobQueue] 任务 ${jobId.substring(0, 8)} (${type}) 超时 (${timeoutMs / 1000}s)`)
       }
       throw e
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
 
@@ -840,6 +873,7 @@ class JobQueue {
 
   _handleJobError(id, type, controller, e, retryCount, maxRetries) {
     controller.cancelled = true
+    controller._cancelled = true
     let error = ''
     try {
       if (e instanceof Error) {

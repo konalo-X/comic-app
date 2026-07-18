@@ -43,7 +43,7 @@ function loadComicsWithChapters(db, rows, opts = {}) {
 function _upsertComicInternal(comic, now) {
   const db = core.getDB()
   const existing = db.prepare(
-    `SELECT id, tags, category, chapter_count, author, status, desc_text, update_delta, favorited FROM comics WHERE sourceUrl = ?`
+    `SELECT id, title, cover, tags, category, chapter_count, author, status, desc_text, update_delta, favorited FROM comics WHERE sourceUrl = ?`
   ).get(comic.sourceUrl)
 
   const tags = Array.isArray(comic.tags) ? comic.tags.join(',') : (comic.tags || '')
@@ -52,6 +52,8 @@ function _upsertComicInternal(comic, now) {
 
   if (existing) {
     const id = existing.id
+    const existingTitle = existing.title || ''
+    const existingCover = existing.cover || ''
     const existingTags = existing.tags || ''
     const existingCategory = existing.category || ''
     const existingChCount = existing.chapter_count || 0
@@ -61,13 +63,14 @@ function _upsertComicInternal(comic, now) {
     const existingDelta = existing.update_delta || 0
     const existingFavorited = existing.favorited || 0
 
+    const finalTitle = (comic.title && comic.title.trim()) || existingTitle
+    const finalCover = comic.cover || existingCover
     const finalTags = tags || existingTags
     const finalCategory = (comic.category || '') || existingCategory
     const finalChCount = chCount > 0 ? chCount : existingChCount
     const finalAuthor = (comic.author || '') || existingAuthor
     const finalStatus = (comic.status || '') || existingStatus
     const finalDesc = (comic.desc || '') || existingDesc
-
     let newDelta = existingDelta
     if (chCount > 0 && chCount > existingChCount) {
       newDelta = chCount - existingChCount
@@ -81,7 +84,7 @@ function _upsertComicInternal(comic, now) {
       chapter_names_enriched=CASE WHEN ? > ? THEN 0 ELSE chapter_names_enriched END,
       local_path=COALESCE(NULLIF(?, ''), local_path), updatedAt=?
       WHERE id=?`).run(
-      comic.title || '', comic.cover || '', comic.local_cover || null,
+      finalTitle, finalCover, comic.local_cover || null,
       finalAuthor, finalStatus,
       finalDesc, finalTags, finalCategory,
       comic.updateTime ? Number(comic.updateTime) : null,

@@ -40,11 +40,15 @@ async function jobHandlerSync(job, onProgress) {
 
   // 单本同步调用的超时包装: 防止某本漫画 getDetail/getPageList 半截卡死(即使 _fetch 有 90s 超时,
   // enrichChapters 多章累加也可能无限拖延), 卡住就把这本标失败跳下一本, 不让整轮 sync 堆积到全局超时。
+  // 当被包装的 promise 先 resolve/reject 时，要 clearTimeout 避免长时间跑着的定时器内存泄漏。
   const withTimeout = (promise, ms, label) =>
-    Promise.race([
-      promise,
-      new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} 超时 (${ms / 1000}s)`)), ms))
-    ])
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} 超时 (${ms / 1000}s)`)), ms)
+      promise.then(
+        (val) => { clearTimeout(timer); resolve(val) },
+        (err) => { clearTimeout(timer); reject(err) }
+      )
+    })
 
   async function syncOneComicInternal(comic, i) {
     try {

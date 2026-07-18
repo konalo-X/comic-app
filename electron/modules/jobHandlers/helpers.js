@@ -35,7 +35,18 @@ async function enrichChapters(comic, chaptersToEnrich, source, cancelledFn = nul
       if (h2Name && h2Name.trim() && h2Name.trim() !== chaptersToEnrich[j].name) {
         chapterNameUpdates.push({ index: chaptersToEnrich[j].index, name: h2Name.trim() })
       }
-      await new Promise(r => setTimeout(r, 250))
+      await new Promise(r => {
+        const t = setTimeout(r, 250)
+        if (cancelledFn) {
+          const check = setInterval(() => {
+            if (cancelledFn()) {
+              clearTimeout(t)
+              clearInterval(check)
+              r()
+            }
+          }, 100)
+        }
+      })
     } catch (chE) {}
   }
   return { imageCountUpdates, chapterNameUpdates }
@@ -48,7 +59,7 @@ function addSyncJob(priority = 3) {
   }
   try {
     const existing = jobQueue.db.prepare(
-      `SELECT id, priority FROM job_queue WHERE type = 'sync' AND status IN ('waiting', 'running', 'active') LIMIT 1`
+      `SELECT id, priority FROM job_queue WHERE type = 'sync' AND status IN ('waiting', 'running', 'active', 'paused', 'delayed') LIMIT 1`
     ).get()
     if (existing) {
       if (priority >= existing.priority) {

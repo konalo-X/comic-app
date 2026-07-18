@@ -84,7 +84,8 @@ function initDB() {
         console.log(`[DB] 新数据库创建成功: ${newFile}`)
 
         try {
-          db.exec(`ATTACH DATABASE '${file}' AS old_db`)
+          const escapedFile = String(file).replace(/'/g, "''")
+          db.exec(`ATTACH DATABASE '${escapedFile}' AS old_db`)
           const allOldTables = db.prepare("SELECT name, sql FROM old_db.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()
           const fts5Excluded = new Set()
           for (const t of allOldTables) {
@@ -101,7 +102,8 @@ function initDB() {
           }
           for (const { name } of allOldTables) {
             if (fts5Excluded.has(name)) continue
-            db.exec(`CREATE TABLE IF NOT EXISTS ${name} AS SELECT * FROM old_db.${name}`)
+            const escapedName = String(name).replace(/"/g, '""')
+            db.exec(`CREATE TABLE IF NOT EXISTS "${escapedName}" AS SELECT * FROM old_db."${escapedName}"`)
           }
           const indexes = db.prepare("SELECT sql FROM old_db.sqlite_master WHERE type='index' AND sql IS NOT NULL").all()
           for (const { sql } of indexes) {
@@ -302,11 +304,16 @@ function rowToComic(row, opts = {}) {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
   }
-  if (opts.skipEpubCheck) {
-    result.epubExists = false
+  // 默认不检查 epub（避免列表查询时逐本扫描磁盘），需要时显式传 checkEpub: true
+  if (opts.checkEpub) {
+    try {
+      const epubPath = path.join(getDownloadsDir(), `${sanitizeFilename(row.title)}.epub`)
+      result.epubExists = fs.existsSync(epubPath)
+    } catch (_) {
+      result.epubExists = false
+    }
   } else {
-    const epubPath = path.join(getDownloadsDir(), `${sanitizeFilename(row.title)}.epub`)
-    result.epubExists = fs.existsSync(epubPath)
+    result.epubExists = false
   }
   return result
 }
