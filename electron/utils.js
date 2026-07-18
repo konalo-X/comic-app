@@ -70,4 +70,36 @@ async function getDiskInfo(dirPath) {
   return { total: 0, free: 0, used: 0 }
 }
 
-module.exports = { sanitizeFilename, normalizeName, normalizeTitle, escapeLike, sleep, randomChoice, randomUA, getDiskInfo }
+// ========== 分类推导 ==========
+const VALID_CATEGORIES = ['日漫', '韩漫', '真人', '3D漫画', '同性']
+
+function deriveCategoryFromTags(...tagSources) {
+  for (const tags of tagSources) {
+    if (!tags) continue
+    const list = Array.isArray(tags) ? tags : String(tags).split(',')
+    for (const tag of list) {
+      const t = tag.trim()
+      if (!t) continue
+      const match = VALID_CATEGORIES.find(cat => t.includes(cat) || cat.includes(t))
+      if (match) return match.includes('3D') ? '3D漫画' : match
+    }
+  }
+  return ''
+}
+
+// ========== URL 规范化 ==========
+function normalizeUrl(u) {
+  if (!u) return ''
+  try {
+    let s = String(u).trim().toLowerCase()
+    s = s.replace(/^https?:\/\//, '')
+    s = s.replace(/^www\./, '')
+    s = s.replace(/[#?].*$/, '')
+    s = s.replace(/\/+$/, '')
+    return s
+  } catch (_) {
+    return String(u || '').toLowerCase()
+  }
+}
+
+module.exports = { sanitizeFilename, normalizeName, normalizeTitle, escapeLike, sleep, randomChoice, randomUA, getDiskInfo, deriveCategoryFromTags, normalizeUrl }

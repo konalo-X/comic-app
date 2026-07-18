@@ -6,7 +6,7 @@ const http = require('http')
 const url = require('url')
 const sharpPool = require('./sharpPool')
 const { app } = require('electron')
-const { sanitizeFilename: sanitize, normalizeName, sleep, getDiskInfo } = require('../utils')
+const { sanitizeFilename: sanitize, normalizeName, sleep, getDiskInfo, normalizeUrl } = require('../utils')
 const db = require('../db')
 
 const INTERNAL_ROOT = path.join(app.getPath('documents'), 'comic-downloads')
@@ -44,20 +44,6 @@ function getPrimaryDownloadRoot() {
     return EXTERNAL_ROOT
   }
   return INTERNAL_ROOT
-}
-
-function normalizeUrl(u) {
-  if (!u) return ''
-  try {
-    let s = String(u).trim().toLowerCase()
-    s = s.replace(/^https?:\/\//, '')
-    s = s.replace(/^www\./, '')
-    s = s.replace(/[#?].*$/, '')
-    s = s.replace(/\/+$/, '')
-    return s
-  } catch (_) {
-    return String(u || '').toLowerCase()
-  }
 }
 
 const comicDirCache = new Map()

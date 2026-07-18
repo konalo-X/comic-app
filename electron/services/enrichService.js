@@ -1,22 +1,6 @@
 'use strict'
 
-const { sleep } = require('../utils')
-
-const VALID_CATEGORIES = ['日漫', '韩漫', '真人', '3D漫画', '同性']
-
-function deriveCategoryFromTags(...tagSources) {
-  for (const tags of tagSources) {
-    if (!tags) continue
-    const list = Array.isArray(tags) ? tags : String(tags).split(',')
-    for (const tag of list) {
-      const t = tag.trim()
-      if (!t) continue
-      const match = VALID_CATEGORIES.find(cat => t.includes(cat) || cat.includes(t))
-      if (match) return match.includes('3D') ? '3D漫画' : match
-    }
-  }
-  return ''
-}
+const { sleep, deriveCategoryFromTags } = require('../utils')
 
 function createEnrichService({ db, sources, jobQueue }) {
   async function _sleepWithCancel(ms, cancelledFn) {
