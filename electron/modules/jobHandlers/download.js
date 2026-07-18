@@ -209,6 +209,10 @@ async function jobHandlerDownloadComic(job, onProgress) {
     throw new Error(`漫画名无效 (${comicTitle || '空'})，请先补全漫画详情后再下载`)
   }
 
+  if (!chapters || !Array.isArray(chapters)) {
+    return { completed: 0, totalChapters: 0, msg: `章节数据无效（chapters = ${chapters === undefined ? 'undefined' : typeof chapters}）` }
+  }
+
   const totalChapters = chapters.length
   if (!totalChapters) return { completed: 0, totalChapters: 0 }
 

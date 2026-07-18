@@ -29,6 +29,9 @@ let _currentEnrichJobId = null
 let _currentCheckJobId = null
 let _currentEnrichChaptersJobId = null
 
+// 防止爬取完成后的自动重启：记录爬取是否已完成（包括自动补全链）
+let _crawlChainCompleted = false
+
 // ===== IPC 监听器注册（用 window 级标志防止重复注册，避免 Vite HMR 问题）=====
 function initListeners() {
   if (!window || !window.crawlerApi) {
@@ -44,6 +47,10 @@ function initListeners() {
   window.crawlerApi.onProgress((data) => {
     // 忽略不属于当前任务的历史进度消息
     if (_currentCrawlJobId && data.jobId && data.jobId !== _currentCrawlJobId) {
+      return
+    }
+    if (_crawlChainCompleted) {
+      console.log('[crawler] onProgress ignored: crawl chain already completed')
       return
     }
     if (!state.crawling) {
@@ -113,6 +120,7 @@ function initListeners() {
     state.progress = 100
     state.message = data?.msg || `检查完成！更新 ${data?.updated || 0} 部`
     _currentCheckJobId = null
+    _crawlChainCompleted = true
     notifyRefresh()
     setTimeout(() => { state.checking = false }, 2500)
   })
@@ -171,6 +179,7 @@ export async function startCrawl() {
     return
   }
   _crawlLock = true
+  _crawlChainCompleted = false
   state.crawling = true
   state.progress = 0
   state.message = '正在连接...'

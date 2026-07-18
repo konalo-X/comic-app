@@ -19,12 +19,16 @@ function createCrawlService({ db, sources, jobQueue }) {
   async function crawlAll({ resumePage = 0, startUrl, onProgress, cancelled }) {
     const MAX_EMPTY_PAGES = CRAWL.MAX_EMPTY_PAGES
     const MAX_RETRY_PER_PAGE = CRAWL.MAX_RETRY_PER_PAGE
+    const MAX_TOTAL_PAGES = CRAWL.MAX_TOTAL_PAGES
     const PAGE_DELAY_MIN = CRAWL.PAGE_DELAY_MIN
     const PAGE_DELAY_MAX = CRAWL.PAGE_DELAY_MAX
+    const QUICK_SCAN_LIMIT = CRAWL.QUICK_SCAN_LIMIT
+    const MAX_CONSECUTIVE_NO_NEW = CRAWL.MAX_CONSECUTIVE_NO_NEW
 
     let pageNum = resumePage
     let totalSaved = 0, totalNew = 0, totalSkipped = 0, totalFailedPages = 0
     let consecutiveEmpty = 0
+    let consecutiveNoNew = 0
     let knownTotalPages = 0
     let reportedTotalCount = 0
 
@@ -33,10 +37,20 @@ function createCrawlService({ db, sources, jobQueue }) {
     onProgress({ page: 0, total: 0, msg: '正在连接服务器...' })
     await _warmup(source, cancelled, onProgress)
 
-    while (pageNum < (knownTotalPages || 150)) {
+    let loopLimit = knownTotalPages > 0 ? knownTotalPages : MAX_TOTAL_PAGES
+
+    logger.info(`[crawlService] 启动快速扫描：最多扫描 ${QUICK_SCAN_LIMIT} 页，连续 ${MAX_CONSECUTIVE_NO_NEW} 页无新增则停止`)
+
+    while (pageNum < loopLimit) {
       if (cancelled()) return { total: totalSaved, pages: pageNum, cancelled: true }
 
       pageNum++
+
+      if (knownTotalPages > 0 && pageNum > knownTotalPages) {
+        logger.info(`[crawlService] 已到达已知总页数 ${knownTotalPages}，停止爬取`)
+        onProgress({ page: pageNum - 1, total: totalSaved, msg: '爬取完成（已达总页数）' })
+        break
+      }
       onProgress({ page: pageNum, total: totalSaved, msg: `正在爬取第 ${pageNum} 页...` })
 
       const result = await _fetchPage(source, pageNum, cancelled, MAX_RETRY_PER_PAGE)
@@ -49,7 +63,11 @@ function createCrawlService({ db, sources, jobQueue }) {
 
       const { items, totalPages, totalCount } = result
 
-      if (totalPages > 0) knownTotalPages = totalPages
+      if (totalPages > 0 && knownTotalPages === 0) {
+        knownTotalPages = totalPages
+        loopLimit = Math.min(knownTotalPages, QUICK_SCAN_LIMIT)
+        logger.info(`[crawlService] 检测到总页数: ${knownTotalPages}，快速扫描上限: ${loopLimit}`)
+      }
       if (totalCount > 0) reportedTotalCount = totalCount
 
       if (pageNum === 1 && (reportedTotalCount > 0 || knownTotalPages > 0)) {
@@ -63,10 +81,27 @@ function createCrawlService({ db, sources, jobQueue }) {
         totalNew += newCount
         totalSkipped += skipped
         onProgress({ page: pageNum, total: totalSaved, msg: `第 ${pageNum} 页：新增 ${newCount} 部，跳过 ${skipped} 部（累计新增 ${totalNew}）` })
+
+        if (newCount === 0) {
+          consecutiveNoNew++
+          if (consecutiveNoNew >= MAX_CONSECUTIVE_NO_NEW) {
+            logger.info(`[crawlService] 连续 ${MAX_CONSECUTIVE_NO_NEW} 页无新增漫画，停止爬取`)
+            onProgress({ page: pageNum, total: totalSaved, msg: `爬取完成（连续${MAX_CONSECUTIVE_NO_NEW}页无新增）` })
+            break
+          }
+        } else {
+          consecutiveNoNew = 0
+        }
       } else {
         consecutiveEmpty++
+        consecutiveNoNew++
         if (consecutiveEmpty >= MAX_EMPTY_PAGES) {
           onProgress({ page: pageNum, total: totalSaved, msg: '已爬完所有可用页面' })
+          break
+        }
+        if (consecutiveNoNew >= MAX_CONSECUTIVE_NO_NEW) {
+          logger.info(`[crawlService] 连续 ${MAX_CONSECUTIVE_NO_NEW} 页无新增漫画，停止爬取`)
+          onProgress({ page: pageNum, total: totalSaved, msg: `爬取完成（连续${MAX_CONSECUTIVE_NO_NEW}页无新增）` })
           break
         }
         onProgress({ page: pageNum, total: totalSaved, msg: `第 ${pageNum} 页为空（${consecutiveEmpty}/${MAX_EMPTY_PAGES}）` })

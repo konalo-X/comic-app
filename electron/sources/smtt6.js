@@ -341,13 +341,57 @@ class Smtt6Source extends ComicSource {
     let totalCount = 0
     let totalPages = 0
     let currentPage = 0
-    const pageText = $('ul.hl-page-wrap').parent().text() || $('ul.hl-page-wrap').text()
+
+    // 尝试多种方式获取分页文本
+    // 方式 1: ul.hl-page-wrap 的父元素
+    let pageText = $('ul.hl-page-wrap').parent().text() || ''
+    // 方式 2: 整个 body 中搜索包含 "/" 和 "页" 的文本块
+    if (!pageText || pageText.length < 10) {
+      pageText = $('body').text() || ''
+    }
+
+    // 尝试多种分页格式
     const countMatch = pageText.match(/共\s*(\d+(?:,\d+)*)\s*个/)
-    const pageMatch = pageText.match(/(\d+)\s*\/\s*(\d+)\s*页/)
     if (countMatch) totalCount = parseInt(countMatch[1].replace(/,/g, ''), 10) || 0
+
+    // 格式 1: "1 / 126 页" 或 "1/126页" / "第1/126页"
+    let pageMatch = pageText.match(/(\d+)\s*\/\s*(\d+)\s*页/)
+    // 格式 2: "1 / 126" (无"页"字，但前面有"共 X 个")
+    if (!pageMatch) pageMatch = pageText.match(/共\s*\d+(?:,\d+)*\s*个[^0-9]*(\d+)\s*\/\s*(\d+)/)
+    // 格式 3: 从分页链接中提取最大页码（最可靠的兜底方案）
+    if (totalPages === 0) {
+      const pageLinks = $('ul.hl-page-wrap a[href]')
+      let maxPageFromLinks = 0
+      pageLinks.each((i, el) => {
+        const href = $(el).attr('href') || ''
+        const m = href.match(/page\/(\d+)/)
+        if (m) {
+          const p = parseInt(m[1], 10)
+          if (p > maxPageFromLinks) maxPageFromLinks = p
+        }
+      })
+      if (maxPageFromLinks > 0) {
+        totalPages = maxPageFromLinks
+      }
+    }
+
+    // 格式 4: 通用 "数字/数字"（兜底方案）
+    if (!pageMatch) pageMatch = pageText.match(/(\d+)\s*\/\s*(\d+)/)
     if (pageMatch) {
       currentPage = parseInt(pageMatch[1], 10) || 0
       totalPages = parseInt(pageMatch[2], 10) || 0
+    }
+
+    // 格式 5: 如果还不行，尝试从 body 中搜索 "共 X 页"
+    if (totalPages === 0) {
+      const totalPagesMatch = pageText.match(/共\s*(\d+)\s*页/)
+      if (totalPagesMatch) {
+        totalPages = parseInt(totalPagesMatch[1], 10) || 0
+      }
+    }
+
+    if (totalPages === 0) {
+      console.log(`[smtt6] _parseList 分页解析失败，尝试了所有格式。pageText前200字符="${pageText.substring(0, 200)}"`)
     }
 
     $('li.hl-list-item').each((i, el) => {

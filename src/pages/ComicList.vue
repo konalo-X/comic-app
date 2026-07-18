@@ -250,9 +250,10 @@ async function batchDownload() {
     const results = await batchProcess(ids, async (id) => {
       const comic = comics.value.find(c => (c._id || c.sourceUrl) === id)
       if (comic && comic.chapters && comic.chapters.length > 0) {
-        const chapters = comic.chapters.map(ch => ({
+        const chapters = comic.chapters.map((ch, i) => ({
           name: ch.name,
-          url: ch.url
+          url: ch.url,
+          index: i
         }))
         await window.offlineApi?.queueAllChapters?.({
           comicTitle: comic.title,
@@ -500,9 +501,10 @@ async function downloadComic(comic) {
     return
   }
   
-  const chapters = comic.chapters.map(ch => ({
+  const chapters = comic.chapters.map((ch, i) => ({
     name: ch.name,
-    url: ch.url
+    url: ch.url,
+    index: i
   }))
   
   try {

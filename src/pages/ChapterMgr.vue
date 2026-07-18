@@ -221,12 +221,12 @@ const isDownloaded = computed(() => {
   return !!selectedComic.value?.local_path
 })
 
-// 计算是否有更新（在线章节数 > 本地章节数）
+// 计算是否有更新（使用数据库维护的 updateDelta 字段）
 const hasUpdate = computed(() => {
   if (!selectedComic.value) return false
-  const onlineCount = selectedComic.value.chapter_count || 0
-  const localCount = selectedComic.value.local_chapter_count || 0
-  return isDownloaded.value && onlineCount > localCount
+  if (!isDownloaded.value) return false
+  const delta = selectedComic.value.updateDelta || 0
+  return delta > 0
 })
 
 // 跟踪当前漫画是否在下载队列中
@@ -251,8 +251,8 @@ const isDownloadDisabled = computed(() => {
   if (caching.value || isInQueue.value) return true
   // 没有章节数据 → 禁用
   if (!hasChapters.value) return true
-  // 已下载且无更新时禁用
-  return isDownloaded.value && !hasUpdate.value
+  // 已下载且无更新 → 允许重新下载（不再禁用）
+  return false
 })
 
 const selectedComic = computed(() => {
@@ -410,6 +410,12 @@ async function cacheComic() {
     return
   }
 
+  // 已下载且无更新时，二次确认是否要重新下载
+  if (isDownloaded.value && !hasUpdate.value) {
+    const confirmed = confirm('该漫画已完整下载。确认要重新下载所有章节吗？')
+    if (!confirmed) return
+  }
+
   caching.value = true
   let wasSkipped = false
 
@@ -456,9 +462,10 @@ async function cacheComic() {
       return
     }
 
-    const chaptersForQueue = allChapters.map(ch => ({
+    const chaptersForQueue = allChapters.map((ch, i) => ({
       name: ch.name,
-      url: ch.url
+      url: ch.url,
+      index: i
     }))
 
     // 确保漫画标题不为空，防止生成"未知漫画"任务
