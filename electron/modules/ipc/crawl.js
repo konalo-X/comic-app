@@ -73,6 +73,7 @@ function register(deps) {
   let globalCrawlForwarder = null
   function ensureGlobalCrawlForwarder() {
     if (globalCrawlForwarder) return
+    if (!jq || typeof jq.on !== 'function') return
 
     const channelMap = {
       crawlAll: 'crawl',
@@ -152,7 +153,8 @@ function register(deps) {
   }
 
   // --- 全局爬取/同步进度事件转发（确保所有任务的 progress/done/failed 都能到前端） ---
-  ensureGlobalCrawlForwarder()
+  // 延迟到 JobQueue 初始化后由 startup.js 调用，避免 jq 为 null 时报错
+  // ensureGlobalCrawlForwarder()
 
   // crawl:all 防重入：同时只允许一个 Promise 等待
   let _crawlAllPromise = null

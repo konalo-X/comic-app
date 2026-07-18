@@ -83,7 +83,6 @@ const localStatus = computed(() => {
     if (delta > 0) return 'update'
     return 'local'
   }
-  if (delta > 0) return 'update'
   return 'online'
 })
 
