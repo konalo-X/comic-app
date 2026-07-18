@@ -521,6 +521,8 @@ class JobQueue {
       active.controller._cancelled = true
       this._active.delete(jobId)
       console.log(`[JobQueue] 取消活跃任务 ${jobId.substring(0, 8)}`)
+      this._waitingDirty = true
+      this._scheduleTick()
     }
     this._emit('cancelled', { jobId })
   }
@@ -528,6 +530,7 @@ class JobQueue {
   retry(jobId) {
     this.db.prepare(`UPDATE job_queue SET status = 'waiting', retry_count = 0, error = NULL, updated_at = ?
       WHERE id = ? AND (status = 'failed' OR status = 'cancelled')`).run(Date.now(), jobId)
+    this._waitingDirty = true
     this._scheduleTick()
     this._emit('retried', { jobId })
   }
@@ -535,6 +538,7 @@ class JobQueue {
   retryAll() {
     this.db.prepare(`UPDATE job_queue SET status = 'waiting', retry_count = 0, error = NULL, updated_at = ?
       WHERE (status = 'failed' OR status = 'cancelled')`).run(Date.now())
+    this._waitingDirty = true
     this._scheduleTick()
     this._emit('retriedAll', {})
   }
@@ -835,6 +839,7 @@ class JobQueue {
       this._handleJobError(id, type, controller, e, retryCount, maxRetries)
     } finally {
       this._active.delete(id)
+      this._waitingDirty = true
       setImmediate(() => this._scheduleTick())
     }
   }
