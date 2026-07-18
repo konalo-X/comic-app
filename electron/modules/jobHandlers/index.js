@@ -50,6 +50,7 @@ function initJobQueue() {
       downloadChapter: { delay: 5 * 60 * 1000, maxAutoRetries: 5, backoff: 1.5 },
       downloadComic: { delay: 10 * 60 * 1000, maxAutoRetries: 3, backoff: 2 },
       sync: { delay: 30 * 60 * 1000, maxAutoRetries: 3, backoff: 2 },
+      crawlAll: { delay: 5 * 60 * 1000, maxAutoRetries: 3, backoff: 2 },
       autoEnrich: { delay: 30 * 60 * 1000, maxAutoRetries: 3, backoff: 2 },
       repairComic: { delay: 60 * 60 * 1000, maxAutoRetries: 2, backoff: 2 },
       enrichChapters: { delay: 30 * 60 * 1000, maxAutoRetries: 3, backoff: 2 }
