@@ -8,18 +8,22 @@ async function jobHandlerCrawlAll(job, onProgress) {
   const source = sources.default
   let pageNum = 0, totalSaved = 0, totalNew = 0, totalSkipped = 0, totalFailedPages = 0
   let consecutiveEmpty = 0
+  let knownTotalPages = 0
+  let reportedTotalCount = 0
   const MAX_EMPTY_PAGES = 3
   const MAX_RETRY_PER_PAGE = 5
   const PAGE_DELAY_MIN = 3000
   const PAGE_DELAY_MAX = 6000
+  const savedPage = job.payload?.page ?? 0
+  pageNum = savedPage
   const startUrl = job.payload?.startUrl || `${source.baseUrl}/man-hua-lei-bie/all/ob/time/st/all/page/1`
-  console.log('[crawl] jobHandlerCrawlAll started, startUrl=', startUrl)
+  console.log('[crawl] jobHandlerCrawlAll started, startUrl=', startUrl, 'resumePage=', pageNum)
   onProgress({ page: 0, total: 0, msg: '初始化爬虫...' })
 
   onProgress({ page: 0, total: 0, msg: '正在连接服务器...' })
   try {
     await Promise.race([
-      source.search('', 1),
+      source.search('', 1, job.cancelled),
       new Promise((_, reject) => setTimeout(() => reject(new Error('预热超时')), 30000))
     ])
     onProgress({ page: 0, total: 0, msg: '连接成功，开始爬取...' })
@@ -28,7 +32,7 @@ async function jobHandlerCrawlAll(job, onProgress) {
     onProgress({ page: 0, total: 0, msg: '服务器响应较慢，继续爬取...' })
   }
 
-  while (pageNum < 150) {
+  while (pageNum < (knownTotalPages || 150)) {
     if (job.cancelled()) return { total: totalSaved, pages: pageNum, failed: totalFailedPages, msg: '已取消' }
     pageNum++
     onProgress({ page: pageNum, total: totalSaved, msg: `正在爬取第 ${pageNum} 页...` })
@@ -40,10 +44,20 @@ async function jobHandlerCrawlAll(job, onProgress) {
     for (let retry = 0; retry < MAX_RETRY_PER_PAGE; retry++) {
       if (job.cancelled()) break
       try {
-        items = await source.getPopular(pageNum)
+        const result = await source.getPopular(pageNum, job.cancelled)
+        if (result && Array.isArray(result.items)) {
+          items = result.items
+          if (result.totalPages > 0) {
+            knownTotalPages = result.totalPages
+            reportedTotalCount = result.totalCount || 0
+          }
+        } else {
+          items = result || []
+        }
         pageSuccess = true
         break
       } catch (e) {
+        if (e.message === 'cancelled') break
         lastError = e
         const isConnReset = e.message?.includes('ECONNRESET')
         console.warn(`[crawl] 第 ${pageNum} 页第 ${retry + 1} 次尝试失败:`, e.message)
@@ -70,6 +84,11 @@ async function jobHandlerCrawlAll(job, onProgress) {
       }
       await sleep(PAGE_DELAY_MIN + Math.random() * (PAGE_DELAY_MAX - PAGE_DELAY_MIN))
       continue
+    }
+
+    // 第一页：打印网站报告的总漫画数和总页数
+    if (pageNum === 1 && (reportedTotalCount > 0 || knownTotalPages > 0)) {
+      console.log(`[crawl] 网站报告：共 ${reportedTotalCount} 部漫画，${knownTotalPages} 页`)
     }
 
     if (items.length > 0) {
@@ -109,8 +128,8 @@ async function jobHandlerCrawlAll(job, onProgress) {
 
     await sleep(PAGE_DELAY_MIN + Math.random() * (PAGE_DELAY_MAX - PAGE_DELAY_MIN))
   }
-  console.log('[crawl] finished, pages=', pageNum, 'totalNew=', totalNew, 'skipped=', totalSkipped, 'failedPages=', totalFailedPages)
-  return { total: totalSaved, pages: pageNum, skipped: totalSkipped, failed: totalFailedPages, msg: `新增 ${totalNew} 部，跳过 ${totalSkipped} 部，失败 ${totalFailedPages} 页` }
+  console.log('[crawl] finished, pages=', pageNum, 'totalNew=', totalNew, 'skipped=', totalSkipped, 'failedPages=', totalFailedPages, 'reportedTotal=', reportedTotalCount, 'reportedPages=', knownTotalPages)
+  return { total: totalSaved, pages: pageNum, skipped: totalSkipped, failed: totalFailedPages, reportedTotal: reportedTotalCount, reportedPages: knownTotalPages, msg: `新增 ${totalNew} 部，跳过 ${totalSkipped} 部，失败 ${totalFailedPages} 页` }
 }
 
 module.exports = { jobHandlerCrawlAll }

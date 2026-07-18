@@ -19,12 +19,13 @@ function deriveCategoryFromTags(...tagSources) {
   return ''
 }
 
-async function enrichChapters(comic, chaptersToEnrich, source) {
+async function enrichChapters(comic, chaptersToEnrich, source, cancelledFn = null) {
   const imageCountUpdates = []
   const chapterNameUpdates = []
   for (let j = 0; j < chaptersToEnrich.length; j++) {
+    if (cancelledFn && cancelledFn()) break
     try {
-      const pageList = await source.getPageList(chaptersToEnrich[j].url, comic.sourceUrl)
+      const pageList = await source.getPageList(chaptersToEnrich[j].url, comic.sourceUrl, cancelledFn)
       const images = Array.isArray(pageList) ? pageList : (pageList.images || [])
       const h2Name = (!Array.isArray(pageList) && pageList.chapterName) ? pageList.chapterName : ''
 
@@ -47,7 +48,7 @@ function addSyncJob(priority = 3) {
   }
   try {
     const existing = jobQueue.db.prepare(
-      `SELECT id, priority FROM job_queue WHERE type = 'sync' AND status IN ('waiting', 'active') LIMIT 1`
+      `SELECT id, priority FROM job_queue WHERE type = 'sync' AND status IN ('waiting', 'running', 'active') LIMIT 1`
     ).get()
     if (existing) {
       if (priority >= existing.priority) {

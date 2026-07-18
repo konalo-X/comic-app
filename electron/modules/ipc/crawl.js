@@ -81,9 +81,31 @@ function register(deps) {
       enrichChapters: 'enrichChapters'
     }
 
+    // 按类型缓存当前活跃的 jobId，避免每次都查询数据库
+    const activeJobIdCache = new Map()
+
+    const getActiveJobIdForType = (type) => {
+      try {
+        const existing = jq.findActiveByType(type)
+        if (existing && existing.id) {
+          activeJobIdCache.set(type, existing.id)
+          return existing.id
+        }
+        activeJobIdCache.delete(type)
+        return null
+      } catch (e) {
+        return activeJobIdCache.get(type) || null
+      }
+    }
+
     const unsubProgress = jq.on('progress', (data) => {
       const prefix = channelMap[data.type]
       if (!prefix) return
+      // 关键修复：只转发当前活跃任务的进度，避免多个同类型任务的进度互相干扰
+      const activeJobId = getActiveJobIdForType(data.type)
+      if (activeJobId && data.jobId !== activeJobId) {
+        return
+      }
       console.log(`[job:${data.type}] progress:`, data.page || data.current, data.msg || data.title)
       BrowserWindow.getAllWindows().forEach(w => {
         if (!w.isDestroyed()) w.webContents.send(`${prefix}:progress`, data)
@@ -92,6 +114,11 @@ function register(deps) {
     const unsubDone = jq.on('completed', (data) => {
       const prefix = channelMap[data.type]
       if (!prefix) return
+      const activeJobId = getActiveJobIdForType(data.type)
+      if (activeJobId && data.jobId !== activeJobId) {
+        return
+      }
+      activeJobIdCache.delete(data.type)
       console.log(`[job:${data.type}] completed:`, data.result?.updated, data.result?.total)
       BrowserWindow.getAllWindows().forEach(w => {
         if (!w.isDestroyed()) w.webContents.send(`${prefix}:done`, data.result)
@@ -100,6 +127,11 @@ function register(deps) {
     const unsubFailed = jq.on('failed', (data) => {
       const prefix = channelMap[data.type]
       if (!prefix) return
+      const activeJobId = getActiveJobIdForType(data.type)
+      if (activeJobId && data.jobId !== activeJobId) {
+        return
+      }
+      activeJobIdCache.delete(data.type)
       console.error(`[job:${data.type}] failed:`, data.error)
       BrowserWindow.getAllWindows().forEach(w => {
         if (!w.isDestroyed()) w.webContents.send(`${prefix}:done`, { error: data.error })
@@ -152,7 +184,7 @@ function register(deps) {
           reject(new Error(data.error || '作业失败'))
         }
       })
-      jobId = jq.add('crawlAll', { startUrl }, { priority: 0 })
+      jobId = jq.add('crawlAll', { startUrl }, { priority: 0, timeout: 30 * 60 * 1000, maxRetries: 1 })
       if (!jobId) {
         resolved = true
         unsubDone(); unsubFailed()
@@ -229,7 +261,7 @@ function register(deps) {
   ipcMain.handle('detail:autoEnrichAll', async () => {
     try {
       const existing = jq.db.prepare(
-        `SELECT id FROM job_queue WHERE type = 'autoEnrich' AND status IN ('waiting', 'active') LIMIT 1`
+        `SELECT id FROM job_queue WHERE type = 'autoEnrich' AND status IN ('waiting', 'running', 'active') LIMIT 1`
       ).get()
       if (existing) {
         return { success: true, jobId: existing.id, status: 'already_running', message: '已有补全任务在执行中' }

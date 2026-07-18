@@ -100,6 +100,7 @@ class JobQueue {
     this._mutexGroups = new Map()
 
     this._active = new Map()
+    this._running = new Set()
     this._paused = false
     this._tickScheduled = false
 
@@ -239,7 +240,7 @@ class JobQueue {
     const now = Date.now()
     try {
       const activeJobs = this.db.prepare(
-        `SELECT id, type, retry_count, max_retries FROM job_queue WHERE status='active'`
+        `SELECT id, type, retry_count, max_retries FROM job_queue WHERE status IN ('active', 'running')`
       ).all()
       let recovered = 0, exhausted = 0
       for (const job of activeJobs) {
@@ -251,7 +252,7 @@ class JobQueue {
           recovered++
         }
       }
-      if (recovered > 0) console.log(`[JobQueue] 恢复 ${recovered} 个中断任务（active -> waiting）`)
+      if (recovered > 0) console.log(`[JobQueue] 恢复 ${recovered} 个中断任务（active/running -> waiting）`)
       if (exhausted > 0) console.log(`[JobQueue] ${exhausted} 个任务重试次数耗尽，标记为 failed`)
     } catch (e) {
       console.warn('[JobQueue] _recover 失败（数据库可能只读）:', e.message)
@@ -372,7 +373,7 @@ class JobQueue {
   add(type, payload, opts = {}) {
     if (this._singletonTypes.has(type)) {
       const existing = this.db.prepare(
-        `SELECT id, priority, status FROM job_queue WHERE type = ? AND status IN ('waiting', 'active', 'delayed') LIMIT 1`
+        `SELECT id, priority, status FROM job_queue WHERE type = ? AND status IN ('waiting', 'running', 'active', 'paused', 'delayed') LIMIT 1`
       ).get(type)
       if (existing) {
         const newPriority = opts.priority ?? 2
@@ -428,7 +429,21 @@ class JobQueue {
   findByType(type) {
     const row = this.db.prepare(
       `SELECT ${JOB_COLUMNS} FROM job_queue
-       WHERE type = ? AND status IN ('waiting', 'running', 'active', 'delayed')
+       WHERE type = ? AND status IN ('waiting', 'running', 'active', 'paused', 'delayed')
+       ORDER BY priority ASC, created_at ASC LIMIT 1`
+    ).get(type)
+    return this._rowToJob(row)
+  }
+
+  findActiveByType(type) {
+    let active = null
+    this._active.forEach((entry) => {
+      if (entry.job.type === type) active = entry.job
+    })
+    if (active) return active
+    const row = this.db.prepare(
+      `SELECT ${JOB_COLUMNS} FROM job_queue
+       WHERE type = ? AND status IN ('running', 'active')
        ORDER BY priority ASC, created_at ASC LIMIT 1`
     ).get(type)
     return this._rowToJob(row)
@@ -444,6 +459,7 @@ class JobQueue {
     if (active) {
       this._updateStatus(jobId, 'paused')
       active.controller.cancelled = true
+      active.controller._cancelled = true
       active.controller._paused = true
       this._active.delete(jobId)
       this._emit('paused', { jobId })
@@ -462,7 +478,7 @@ class JobQueue {
     }
     if (this._singletonTypes.has(row.type)) {
       const existing = this.db.prepare(
-        `SELECT id FROM job_queue WHERE type = ? AND status IN ('waiting', 'active', 'delayed') LIMIT 1`
+        `SELECT id FROM job_queue WHERE type = ? AND status IN ('waiting', 'running', 'active', 'delayed') LIMIT 1`
       ).get(row.type)
       if (existing) {
         console.warn(`[JobQueue] resumeJob 拒绝: 单例类型 ${row.type} 已有活跃任务 ${existing.id.substring(0, 8)}`)
@@ -559,6 +575,7 @@ class JobQueue {
       if (conflict && conflict.entry.job.priority > newPriority) {
         console.log(`[JobQueue] 抢占(互斥): 暂停 ${conflict.entry.job.type}(p=${conflict.entry.job.priority}) 为 ${type}(p=${newPriority}) 腾出位置`)
         conflict.entry.controller.cancelled = true
+        conflict.entry.controller._cancelled = true
         conflict.entry.controller._preempted = true
         this._active.delete(conflict.id)
         this._preemptReset(conflict.id)
@@ -577,6 +594,7 @@ class JobQueue {
     if (lowestEntry) {
       console.log(`[JobQueue] 抢占: 暂停 priority=${lowestPriority} 任务 ${lowestEntry.job.id.substring(0, 8)}，为 priority=${newPriority} 腾出位置`)
       lowestEntry.controller.cancelled = true
+      lowestEntry.controller._cancelled = true
       lowestEntry.controller._preempted = true
       this._active.delete(lowestEntry.job.id)
       this._preemptReset(lowestEntry.job.id)
@@ -596,11 +614,12 @@ class JobQueue {
     try {
       const STALL_MS = 8 * 60 * 1000
       const zombies = this.db.prepare(
-        `SELECT id FROM job_queue WHERE status = 'active'
+        `SELECT id FROM job_queue WHERE status IN ('active', 'running')
          AND (last_progress_at IS NULL OR last_progress_at < ?)`
       ).all(Date.now() - STALL_MS)
       for (const z of zombies) {
-        if (this._active.has(z.id)) continue // 真在跑, 不动
+        if (this._active.has(z.id)) continue
+        if (this._running.has(z.id)) continue
         this._updateStatus(z.id, 'waiting', { error: '自愈: 复位卡死的 active 僵尸任务' })
         console.log(`[JobQueue] 自愈: 复位卡死任务 ${z.id.substring(0, 8)} (active -> waiting)`)
       }
@@ -631,6 +650,7 @@ class JobQueue {
       }
       const row = waiting.find(r => {
         if (this._active.has(r.id)) return false
+        if (this._running.has(r.id)) return false
         if (!this._canStart(r.type)) return false
         const typeMax = this.typeConcurrency[r.type]
         if (typeMax !== undefined && typeMax > 0) {
@@ -672,35 +692,71 @@ class JobQueue {
       return
     }
 
+    if (this._running.has(id)) {
+      console.log(`[JobQueue] 任务 ${id.substring(0, 8)} (${type}) 的旧 handler 仍在运行，跳过重新执行`)
+      this._scheduleTick()
+      return
+    }
+
+    if (this._singletonTypes.has(type)) {
+      let hasActiveSibling = false
+      this._active.forEach((entry, entryId) => {
+        if (entryId !== id && entry.job.type === type) hasActiveSibling = true
+      })
+      if (hasActiveSibling) {
+        console.log(`[JobQueue] 单例类型 ${type} 已有其他任务运行中，跳过执行 ${id.substring(0, 8)}`)
+        this._updateStatus(id, 'waiting')
+        this._scheduleTick()
+        return
+      }
+    }
+
+    this._running.add(id)
     this._updateStatus(id, 'active', { started_at: Date.now(), last_progress_at: Date.now() })
 
     const controller = { cancelled: false }
     this._active.set(id, { job: { id, type, priority, payload }, controller })
 
-    try {
-      let lastProgressTime = 0
-      let pendingProgress = null
-      const onProgress = (data) => {
-        const now = Date.now()
-        pendingProgress = data
-        if (now - lastProgressTime >= 1000) {
-          lastProgressTime = now
-          const d = pendingProgress
-          pendingProgress = null
-          this._updateStatus(id, null, {
-            progress: JSON.stringify(d),
-            progress_current: d.current ?? 0,
-            progress_total: d.total ?? 0,
-            last_progress_at: now
-          })
-        }
-        this._emit('progress', { jobId: id, type, ...data })
+    let lastProgressTime = 0
+    let pendingProgress = null
+    let latestPayload = payload
+    const onProgress = (data) => {
+      const now = Date.now()
+      pendingProgress = data
+      if (data && typeof data === 'object') {
+        latestPayload = { ...latestPayload, ...(data.payload || {}) }
+        if (data.page !== undefined) latestPayload.page = data.page
       }
+      if (now - lastProgressTime >= 1000) {
+        lastProgressTime = now
+        const d = pendingProgress
+        pendingProgress = null
+        this._updateStatus(id, null, {
+          progress: JSON.stringify(d),
+          progress_current: d.current ?? 0,
+          progress_total: d.total ?? 0,
+          payload: JSON.stringify(latestPayload),
+          last_progress_at: now
+        })
+      }
+      this._emit('progress', { jobId: id, type, ...data })
+    }
 
-      const jobTimeout = timeout || this._defaultTimeout
+    const typeOverrides = {
+      crawlAll: 30 * 60 * 1000
+    }
+    const jobTimeout = typeOverrides[type] || timeout || this._defaultTimeout
+
+    const handlerPromise = handler({ id, type, priority, payload, cancelled: () => controller.cancelled }, onProgress)
+    handlerPromise.finally(() => {
+      this._running.delete(id)
+    })
+
+    try {
       const result = await this._runWithTimeout(
-        handler({ id, type, priority, payload, cancelled: () => controller.cancelled }, onProgress),
+        handlerPromise,
         jobTimeout,
+        controller,
         id, type
       )
 
@@ -712,12 +768,25 @@ class JobQueue {
           progress: JSON.stringify(d),
           progress_current: d.current ?? 0,
           progress_total: d.total ?? 0,
+          payload: JSON.stringify(latestPayload),
           last_progress_at: now
         })
       }
 
       this._finalizeJob(id, type, controller, result, retryCount, maxRetries, now)
     } catch (e) {
+      const now = Date.now()
+      if (pendingProgress) {
+        const d = pendingProgress
+        pendingProgress = null
+        this._updateStatus(id, null, {
+          progress: JSON.stringify(d),
+          progress_current: d.current ?? 0,
+          progress_total: d.total ?? 0,
+          payload: JSON.stringify(latestPayload),
+          last_progress_at: now
+        })
+      }
       this._handleJobError(id, type, controller, e, retryCount, maxRetries)
     } finally {
       this._active.delete(id)
@@ -725,14 +794,20 @@ class JobQueue {
     }
   }
 
-  async _runWithTimeout(promise, timeoutMs, jobId, type) {
+  async _runWithTimeout(promise, timeoutMs, controller, jobId, type) {
     if (!timeoutMs || timeoutMs <= 0) return promise
+    let timedOut = false
     const timer = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`任务超时 (${timeoutMs / 1000}s)`)), timeoutMs)
+      setTimeout(() => {
+        timedOut = true
+        if (controller) controller.cancelled = true
+        reject(new Error(`任务超时 (${timeoutMs / 1000}s)`))
+      }, timeoutMs)
     )
     try {
       return await Promise.race([promise, timer])
     } catch (e) {
+      if (timedOut && controller) controller.cancelled = true
       if (e.message && e.message.includes('任务超时')) {
         console.warn(`[JobQueue] 任务 ${jobId.substring(0, 8)} (${type}) 超时 (${timeoutMs / 1000}s)`)
       }
@@ -741,14 +816,18 @@ class JobQueue {
   }
 
   _finalizeJob(id, type, controller, result, retryCount, maxRetries, now) {
-    if (controller._paused) {
+    const cancelled = controller._cancelled || controller.cancelled
+    const paused = controller._paused
+    const preempted = controller._preempted
+
+    if (paused) {
       console.log(`[JobQueue] 任务 ${id} (${type}) 已被外部暂停，状态保持 paused`)
-    } else if (controller._cancelled) {
-      console.log(`[JobQueue] 任务 ${id} (${type}) 已被外部取消，状态保持 cancelled`)
-    } else if (controller._preempted) {
+    } else if (preempted) {
       this._updateStatus(id, 'waiting')
       this._emit('paused', { jobId: id, type, reason: 'preempted' })
       console.log(`[JobQueue] 任务 ${id} (${type}) 被抢占，已回到等待队列`)
+    } else if (cancelled) {
+      console.log(`[JobQueue] 任务 ${id} (${type}) 已被取消或超时，状态保持 cancelled`)
     } else {
       this._updateStatus(id, 'completed', {
         result: typeof result === 'string' ? result : JSON.stringify(result),
@@ -760,6 +839,7 @@ class JobQueue {
   }
 
   _handleJobError(id, type, controller, e, retryCount, maxRetries) {
+    controller.cancelled = true
     let error = ''
     try {
       if (e instanceof Error) {
@@ -808,7 +888,7 @@ class JobQueue {
     if (!job || !job.repeatInterval) return
 
     const existing = this.db.prepare(
-      `SELECT id FROM job_queue WHERE type = ? AND status IN ('waiting', 'active', 'delayed') LIMIT 1`
+      `SELECT id FROM job_queue WHERE type = ? AND status IN ('waiting', 'running', 'active', 'paused', 'delayed') LIMIT 1`
     ).get(type)
     if (existing) {
       console.log(`[JobQueue] 重复任务 ${type} 已有活跃实例，跳过`)
@@ -945,13 +1025,14 @@ class JobQueue {
     try {
       const stalled = this.db.prepare(
         `SELECT id, type FROM job_queue
-         WHERE status = 'active' AND (last_progress_at IS NULL OR last_progress_at < ?)`
+         WHERE status IN ('active', 'running') AND (last_progress_at IS NULL OR last_progress_at < ?)`
       ).all(cutoff)
       for (const job of stalled) {
         const active = this._active.get(job.id)
         if (active) {
           console.warn(`[JobQueue] 检测到停滞任务 ${job.id.substring(0, 8)} (${job.type})，强制取消`)
           active.controller.cancelled = true
+          active.controller._cancelled = true
           this._active.delete(job.id)
         }
         this._updateStatus(job.id, 'failed', { error: '任务停滞：超过 10 分钟无进度' })

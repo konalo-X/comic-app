@@ -153,7 +153,7 @@ async function jobHandlerDownloadChapter(job, onProgress) {
     console.warn(`[下载] 章节名过于简单 (${actualChapterName})，重新爬取详情页`)
     try {
       const source = sources.get('smtt6') || sources.default
-      const detail = await source.getDetail(sourceUrl)
+      const detail = await source.getDetail(sourceUrl, job.cancelled)
       if (detail.chapters && detail.chapters[chapter.index]) {
         actualChapterName = detail.chapters[chapter.index].name
         console.log(`[下载] 已校正章节名: ${actualChapterName}`)

@@ -48,6 +48,18 @@ function parseDateToTimestamp(dateStr) {
 const RETRY_TIMES = 5
 const TIMEOUT = 90000
 
+async function _sleepWithCancel(ms, cancelledFn, cancelMsg) {
+  if (!cancelledFn) return sleep(ms)
+  const start = Date.now()
+  while (Date.now() - start < ms) {
+    if (cancelledFn()) {
+      console.log(`[SmartCrawl] ${cancelMsg || 'sleep cancelled'}`)
+      throw new Error('cancelled')
+    }
+    await sleep(Math.min(500, ms - (Date.now() - start)))
+  }
+}
+
 // ========== 智能爬虫配置 ==========
 const CRAWL_CONFIG = {
   baseDelay: 2000,
@@ -248,16 +260,20 @@ class Smtt6Source extends ComicSource {
   get lang() { return 'zh' }
   get baseUrl() { return 'https://smtt6.com' }
 
-  async _fetch(url, referer = '') {
+  async _fetch(url, referer = '', cancelledFn = null) {
     return requestQueue.execute(async () => {
       let fingerprint = generateRequestFingerprint()
 
       for (let i = 0; i < RETRY_TIMES; i++) {
+        if (cancelledFn && cancelledFn()) {
+          console.log(`[SmartCrawl] 请求被取消: ${url}`)
+          throw new Error('cancelled')
+        }
         try {
           if (i > 0 || requestQueue.running > 0) {
             const waitTime = calculateWaitTime()
             console.log(`[SmartCrawl] 等待 ${(waitTime / 1000).toFixed(1)}s 后请求...`)
-            await sleep(waitTime)
+            await _sleepWithCancel(waitTime, cancelledFn, `等待期间被取消: ${url}`)
           }
 
           const result = await _fetchWithElectronNet(url, referer, fingerprint)
@@ -265,6 +281,7 @@ class Smtt6Source extends ComicSource {
           console.log(`[SmartCrawl] 成功: ${url}`)
           return result
         } catch (e) {
+          if (cancelledFn && (e.message === 'cancelled' || cancelledFn())) throw e
           const msg = e.message || ''
           console.warn(`[SmartCrawl] 尝试 ${i + 1}/${RETRY_TIMES} 失败: ${msg} (${url})`)
           recordError()
@@ -290,28 +307,28 @@ class Smtt6Source extends ComicSource {
             backoffMs = (i + 1) * 2000 + Math.random() * 2000
           }
 
-          await sleep(backoffMs)
+          await _sleepWithCancel(backoffMs, cancelledFn, `退避期间被取消: ${url}`)
           fingerprint = generateRequestFingerprint()
         }
       }
     })
   }
 
-  async search(query, page = 1) {
+  async search(query, page = 1, cancelledFn = null) {
     const url = `${this.baseUrl}/cata.php?key=${encodeURIComponent(query)}`
-    const html = await this._fetch(url, this.baseUrl + '/')
+    const html = await this._fetch(url, this.baseUrl + '/', cancelledFn)
     return this._parseList(html, url)
   }
 
-  async getPopular(page = 1) {
+  async getPopular(page = 1, cancelledFn = null) {
     const url = `${this.baseUrl}/man-hua-lei-bie/all/ob/time/st/all/page/${page}`
-    const html = await this._fetch(url, this.baseUrl + '/')
+    const html = await this._fetch(url, this.baseUrl + '/', cancelledFn)
     return this._parseList(html, url)
   }
 
-  async getLatest(page = 1) {
+  async getLatest(page = 1, cancelledFn = null) {
     const url = `${this.baseUrl}/man-hua-lei-bie/all/ob/time/st/all/page/${page}`
-    const html = await this._fetch(url, this.baseUrl + '/')
+    const html = await this._fetch(url, this.baseUrl + '/', cancelledFn)
     return this._parseList(html, url)
   }
 
@@ -319,6 +336,19 @@ class Smtt6Source extends ComicSource {
     const $ = cheerio.load(html)
     const items = []
     let pageCategory = $('h1.hl-title, h2.hl-title').first().text().trim()
+
+    // 解析分页信息：共 X 个筛选结果 Y / Z 页
+    let totalCount = 0
+    let totalPages = 0
+    let currentPage = 0
+    const pageText = $('ul.hl-page-wrap').parent().text() || $('ul.hl-page-wrap').text()
+    const countMatch = pageText.match(/共\s*(\d+(?:,\d+)*)\s*个/)
+    const pageMatch = pageText.match(/(\d+)\s*\/\s*(\d+)\s*页/)
+    if (countMatch) totalCount = parseInt(countMatch[1].replace(/,/g, ''), 10) || 0
+    if (pageMatch) {
+      currentPage = parseInt(pageMatch[1], 10) || 0
+      totalPages = parseInt(pageMatch[2], 10) || 0
+    }
 
     $('li.hl-list-item').each((i, el) => {
       const $li = $(el)
@@ -348,7 +378,7 @@ class Smtt6Source extends ComicSource {
         })
       }
     })
-    return items
+    return { items, totalCount, totalPages, currentPage }
   }
 
   getNextPageUrl(currentPageUrl, currentPageHtml) {
@@ -361,8 +391,8 @@ class Smtt6Source extends ComicSource {
     return null
   }
 
-  async getDetail(url) {
-    const html = await this._fetch(url, this.baseUrl + '/')
+  async getDetail(url, cancelledFn = null) {
+    const html = await this._fetch(url, this.baseUrl + '/', cancelledFn)
     const $ = cheerio.load(html)
     const result = {
       title: '', cover: '', author: '', status: '',
@@ -505,8 +535,8 @@ class Smtt6Source extends ComicSource {
     return result
   }
 
-  async getPageList(chapterUrl, referer) {
-    const html = await this._fetch(chapterUrl, referer || this.baseUrl + '/')
+  async getPageList(chapterUrl, referer, cancelledFn = null) {
+    const html = await this._fetch(chapterUrl, referer || this.baseUrl + '/', cancelledFn)
     const $ = cheerio.load(html)
     const images = []
     const seen = new Set()

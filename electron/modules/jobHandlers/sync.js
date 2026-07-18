@@ -70,7 +70,7 @@ async function jobHandlerSync(job, onProgress) {
     const source = comic.sourceUrl?.includes('smtt6') ? sources.get('smtt6') : sources.default
     // getDetail 包装超时: 单次 _fetch 本身 90s(TIMEOUT), 旧值 60s 会在一次请求还没跑完就提前中断,
     // 导致源站慢时大批漫画被误判超时。提到 150s: 允许一次完整 90s 请求 + 一次快重试。
-    const detail = await withTimeout(source.getDetail(comic.sourceUrl), 150 * 1000, 'getDetail')
+    const detail = await withTimeout(source.getDetail(comic.sourceUrl, job.cancelled), 150 * 1000, 'getDetail')
 
     const needsEnrich = !comic.tags || comic.tags.length === 0
       || !comic.status || !comic.desc || !comic.category
@@ -243,7 +243,7 @@ async function jobHandlerSync(job, onProgress) {
           // 固定 240s 盖不住多章慢源(10章最坏 900s), 改为按章数动态: 每章 100s + 下限 240s。
           const enrichTimeoutMs = Math.max(240, chaptersToCheck.length * 100) * 1000
           const { imageCountUpdates, chapterNameUpdates } = await withTimeout(
-            enrichChapters(comic, chaptersToCheck, source),
+            enrichChapters(comic, chaptersToCheck, source, job.cancelled),
             enrichTimeoutMs,
             'enrichChapters'
           )

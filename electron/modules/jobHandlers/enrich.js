@@ -29,7 +29,7 @@ async function jobHandlerAutoEnrich(job, onProgress) {
       try {
         await new Promise(resolve => setTimeout(resolve, j * 1000))
         const source = comic.sourceUrl?.includes('smtt6') ? sources.get('smtt6') : sources.default
-        const detail = await source.getDetail(comic.sourceUrl)
+        const detail = await source.getDetail(comic.sourceUrl, job.cancelled)
 
         const category = detail.category || deriveCategoryFromTags(detail.tags, comic.tags)
         await db.upsertComic({
@@ -108,7 +108,7 @@ async function jobHandlerEnrichImageCounts(job, onProgress) {
           continue
         }
         const batch = chaptersToFix.slice(0, MAX_CHAPTERS_PER_COMIC)
-        const { imageCountUpdates, chapterNameUpdates } = await enrichChapters(comic, batch, source)
+        const { imageCountUpdates, chapterNameUpdates } = await enrichChapters(comic, batch, source, job.cancelled)
 
         if (imageCountUpdates.length > 0) {
           await db.updateChapterImageCounts(comic._id, imageCountUpdates)

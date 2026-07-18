@@ -50,7 +50,6 @@ function initJobQueue() {
       downloadChapter: { delay: 5 * 60 * 1000, maxAutoRetries: 5, backoff: 1.5 },
       downloadComic: { delay: 10 * 60 * 1000, maxAutoRetries: 3, backoff: 2 },
       sync: { delay: 30 * 60 * 1000, maxAutoRetries: 3, backoff: 2 },
-      crawlAll: { delay: 60 * 60 * 1000, maxAutoRetries: 2, backoff: 2 },
       autoEnrich: { delay: 30 * 60 * 1000, maxAutoRetries: 3, backoff: 2 },
       repairComic: { delay: 60 * 60 * 1000, maxAutoRetries: 2, backoff: 2 },
       enrichChapters: { delay: 30 * 60 * 1000, maxAutoRetries: 3, backoff: 2 }
@@ -227,7 +226,7 @@ function startAutoTasks() {
     if (activeDownloads > 0 || activeSync > 0 || activeCrawl > 0) return
 
     const existing = jobQueue.db.prepare(
-      `SELECT id FROM job_queue WHERE type = 'sync' AND status IN ('waiting', 'active') LIMIT 1`
+      `SELECT id FROM job_queue WHERE type = 'sync' AND status IN ('waiting', 'running', 'active') LIMIT 1`
     ).get()
     if (existing) return
 
