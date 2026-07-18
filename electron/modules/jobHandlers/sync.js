@@ -4,7 +4,7 @@ const path = require('path')
 const fs = require('fs')
 const sources = require('../../sources/registry')
 const db = require('../../db')
-const { sanitizeFilename: sanitize } = require('../../utils')
+const { sanitizeFilename: sanitize, sleep } = require('../../utils')
 const {
   findComicDir, resolveUniqueComicDir, getPrimaryDownloadRoot,
   findChapterDir, getValidChapterImages, getValidChapterImagesCached,
@@ -18,6 +18,14 @@ async function jobHandlerSync(job, onProgress) {
   const untaggedLimit = fullSync ? 10000 : 50
   const imgCountLimit = fullSync ? 10000 : 10
   const missingFieldsLimit = fullSync ? 10000 : 30
+
+  async function cancelSleep(ms) {
+    const start = Date.now()
+    while (Date.now() - start < ms) {
+      if (job.cancelled()) throw new Error('cancelled')
+      await sleep(Math.min(500, ms - (Date.now() - start)))
+    }
+  }
 
   const batch = await db.getFavoritedForSyncBatch(favoritedLimit)
   const untagged = await db.getUntaggedComics(untaggedLimit)
@@ -292,7 +300,7 @@ async function jobHandlerSync(job, onProgress) {
         if (isRetryable && attempt < MAX_RETRIES - 1) {
           const backoffMs = 3000 * (attempt + 1) + Math.random() * 2000
           console.log(`[Sync] ${comic.title} 第 ${attempt + 1} 次尝试失败，${(backoffMs / 1000).toFixed(1)}s 后重试...`)
-          await new Promise(r => setTimeout(r, backoffMs))
+          await cancelSleep(backoffMs)
         } else {
           break
         }
@@ -310,7 +318,7 @@ async function jobHandlerSync(job, onProgress) {
     const batch = comics.slice(i, i + SYNC_CONCURRENCY)
     await Promise.allSettled(batch.map((comic, j) => syncOneComic(comic, i + j)))
     if (i + SYNC_CONCURRENCY < comics.length) {
-      await new Promise(r => setTimeout(r, SYNC_DELAY_MS + Math.random() * 1000))
+      await cancelSleep(SYNC_DELAY_MS + Math.random() * 1000)
     }
   }
   return { enriched, updated, failed, skipped, newChapters, total: comics.length }

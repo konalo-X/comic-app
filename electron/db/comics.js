@@ -13,6 +13,21 @@ const COMIC_SELECT_FIELDS_PREFIXED = [
   'comics.updateTime', 'comics.chapter_count', 'comics.update_delta', 'comics.favorited', 'comics.createdAt', 'comics.updatedAt', 'comics.local_path'
 ].join(', ')
 
+// COUNT 缓存：避免每次翻页都 COUNT(*) 全表扫描
+const _countCache = new Map()
+const COUNT_CACHE_TTL = 30 * 1000
+
+function _getCachedCount(cacheKey, db, whereClause, params) {
+  const cached = _countCache.get(cacheKey)
+  if (cached && Date.now() - cached.ts < COUNT_CACHE_TTL) {
+    return cached.count
+  }
+  const countRow = db.prepare(`SELECT COUNT(*) as c FROM comics ${whereClause}`).get(...params)
+  const count = countRow ? countRow.c : 0
+  _countCache.set(cacheKey, { count, ts: Date.now() })
+  return count
+}
+
 function mapRowsToComics(rows, opts = {}) {
   return mapRows(rows, row => core.rowToComic(row, opts))
 }
@@ -41,6 +56,7 @@ function loadComicsWithChapters(db, rows, opts = {}) {
 }
 
 function _upsertComicInternal(comic, now) {
+  _countCache.clear()
   const db = core.getDB()
   const existing = db.prepare(
     `SELECT id, title, cover, tags, category, chapter_count, author, status, desc_text, update_delta, favorited FROM comics WHERE sourceUrl = ?`
@@ -92,22 +108,44 @@ function _upsertComicInternal(comic, now) {
       chCount, existingChCount, comic.local_path || null, now, id
     )
     if (chCount > 0) {
+      const existingRows = db.prepare('SELECT url, name, sort_order, image_count FROM chapters WHERE comic_id=?').all(id)
+      const existingMap = new Map()
       const existingImageCounts = new Map()
-      const existingRows = db.prepare('SELECT url, image_count FROM chapters WHERE comic_id=?').all(id)
       for (const r of existingRows) {
-        if (r.url && r.image_count > 0) existingImageCounts.set(r.url, r.image_count)
+        if (r.url) {
+          existingMap.set(r.url, r)
+          if (r.image_count > 0) existingImageCounts.set(r.url, r.image_count)
+        }
       }
-      db.prepare('DELETE FROM chapters WHERE comic_id=?').run(id)
-      const insertCh = db.prepare('INSERT INTO chapters (comic_id, name, url, sort_order, image_count) VALUES (?,?,?,?,?)')
-      const insertAll = db.transaction(() => {
+      const newUrls = new Set()
+      const updateStmt = db.prepare('UPDATE chapters SET name=?, sort_order=?, image_count=? WHERE comic_id=? AND url=?')
+      const insertStmt = db.prepare('INSERT INTO chapters (comic_id, name, url, sort_order, image_count) VALUES (?,?,?,?,?)')
+      const deleteStmt = db.prepare('DELETE FROM chapters WHERE comic_id=? AND url=?')
+
+      const chapterOps = db.transaction(() => {
         for (let i = 0; i < chapters.length; i++) {
           const ch = chapters[i]
-          const preservedCount = existingImageCounts.get(ch.url) || 0
+          const chUrl = ch.url || ''
+          if (!chUrl) continue
+          newUrls.add(chUrl)
+          const preservedCount = existingImageCounts.get(chUrl) || 0
           const finalImageCount = ch.image_count || preservedCount
-          insertCh.run(id, ch.name || '', ch.url || '', i, finalImageCount)
+          const existing = existingMap.get(chUrl)
+          if (existing) {
+            if (existing.name !== (ch.name || '') || existing.sort_order !== i || existing.image_count !== finalImageCount) {
+              updateStmt.run(ch.name || '', i, finalImageCount, id, chUrl)
+            }
+          } else {
+            insertStmt.run(id, ch.name || '', chUrl, i, finalImageCount)
+          }
+        }
+        for (const url of existingMap.keys()) {
+          if (!newUrls.has(url)) {
+            deleteStmt.run(id, url)
+          }
         }
       })
-      insertAll()
+      chapterOps()
     }
     return { ...comic, _id: id, updatedAt: now, updateDelta: newDelta }
   } else {
@@ -141,11 +179,15 @@ async function upsertComic(comic) {
 async function upsertComics(list) {
   ensureDb()
   const now = Date.now()
+  const db = core.getDB()
   const results = []
-  for (const item of list) {
-    const saved = _upsertComicInternal(item, now)
-    results.push(saved)
-  }
+  const batchTransaction = db.transaction(() => {
+    for (const item of list) {
+      const saved = _upsertComicInternal(item, now)
+      results.push(saved)
+    }
+  })
+  batchTransaction()
   return results
 }
 
@@ -178,8 +220,8 @@ async function getComics(pageOrOpts = 1, pageSizeOrFallback = 24, filtersOrFallb
     ...filters,
     ftsEnabled: core.getFts5Available()
   })
-  const countRow = db.prepare(`SELECT COUNT(*) as c FROM comics ${whereClause}`).get(...params)
-  const total = countRow ? countRow.c : 0
+  const cacheKey = JSON.stringify({ whereClause, params })
+  const total = _getCachedCount(cacheKey, db, whereClause, params)
 
   const offset = (page - 1) * pageSize
   const { joinClause, orderBy } = buildOrderClause(filters)

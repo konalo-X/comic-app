@@ -103,6 +103,7 @@ class JobQueue {
     this._running = new Set()
     this._paused = false
     this._tickScheduled = false
+    this._waitingDirty = true
 
     this._singletonTypes = new Set(options.singletonTypes || [])
 
@@ -403,6 +404,7 @@ class JobQueue {
 
     const { id, priority } = this._insertJob(type, payload, opts)
 
+    this._waitingDirty = true
     if (priority <= 1 && this._active.size >= this.concurrency) {
       this._preemptFor(priority, type)
     }
@@ -579,6 +581,7 @@ class JobQueue {
   _preemptReset(id) {
     try {
       this._updateStatus(id, 'waiting', { error: '被高优先级任务抢占, 复位等待重跑' })
+      this._waitingDirty = true
     } catch (e) {
       console.warn('[JobQueue] 抢占复位失败:', e.message)
     }
@@ -646,11 +649,16 @@ class JobQueue {
     if (this._paused) return
     if (this._active.size >= this.concurrency) return
 
+    if (!this._waitingDirty) return
+    this._waitingDirty = false
+
     const waiting = this.db.prepare(
       `SELECT id, type, priority, payload, max_retries, retry_count, timeout
        FROM job_queue WHERE status = 'waiting'
        ORDER BY priority ASC, created_at ASC LIMIT 500`
     ).all()
+
+    if (waiting.length === 0) return
 
     // 先检查最高优先级任务是否因互斥组被阻塞，是则抢占并等待下一轮
     if (this._tryMutexPreempt(waiting)) return
@@ -911,6 +919,7 @@ class JobQueue {
     const newRetryCount = retryCount + 1
     if (newRetryCount < maxRetries) {
       this._updateStatus(id, 'waiting', { retry_count: newRetryCount, error })
+      this._waitingDirty = true
       this._emit('retrying', { jobId: id, type, error, retry: newRetryCount, maxRetries })
     } else {
       this._updateStatus(id, 'failed', { error, retry_count: newRetryCount })

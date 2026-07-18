@@ -84,6 +84,23 @@ function register(deps) {
     // 按类型缓存当前活跃的 jobId，避免每次都查询数据库
     const activeJobIdCache = new Map()
 
+    // 缓存窗口列表，避免每次 progress 事件都调用 getAllWindows()
+    let cachedWindows = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed())
+    const refreshWindows = () => {
+      cachedWindows = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed())
+    }
+    const { app } = require('electron')
+    app.on('browser-window-blur', refreshWindows)
+    app.on('browser-window-focus', refreshWindows)
+    setInterval(refreshWindows, 30000)
+
+    const broadcast = (channel, data) => {
+      cachedWindows = cachedWindows.filter(w => !w.isDestroyed())
+      for (const w of cachedWindows) {
+        if (!w.isDestroyed()) w.webContents.send(channel, data)
+      }
+    }
+
     const getActiveJobIdForType = (type) => {
       try {
         const existing = jq.findActiveByType(type)
@@ -107,9 +124,7 @@ function register(deps) {
         return
       }
       console.log(`[job:${data.type}] progress:`, data.page || data.current, data.msg || data.title)
-      BrowserWindow.getAllWindows().forEach(w => {
-        if (!w.isDestroyed()) w.webContents.send(`${prefix}:progress`, data)
-      })
+      broadcast(`${prefix}:progress`, data)
     })
     const unsubDone = jq.on('completed', (data) => {
       const prefix = channelMap[data.type]
@@ -120,9 +135,7 @@ function register(deps) {
       }
       activeJobIdCache.delete(data.type)
       console.log(`[job:${data.type}] completed:`, data.result?.updated, data.result?.total)
-      BrowserWindow.getAllWindows().forEach(w => {
-        if (!w.isDestroyed()) w.webContents.send(`${prefix}:done`, data.result)
-      })
+      broadcast(`${prefix}:done`, data.result)
     })
     const unsubFailed = jq.on('failed', (data) => {
       const prefix = channelMap[data.type]
@@ -133,9 +146,7 @@ function register(deps) {
       }
       activeJobIdCache.delete(data.type)
       console.error(`[job:${data.type}] failed:`, data.error)
-      BrowserWindow.getAllWindows().forEach(w => {
-        if (!w.isDestroyed()) w.webContents.send(`${prefix}:done`, { error: data.error })
-      })
+      broadcast(`${prefix}:done`, { error: data.error })
     })
     globalCrawlForwarder = () => { unsubProgress(); unsubDone(); unsubFailed() }
   }
