@@ -264,7 +264,7 @@ function register(deps) {
   ipcMain.handle('detail:autoEnrichAll', async () => {
     try {
       const existing = jq.db.prepare(
-        `SELECT id FROM job_queue WHERE type = 'autoEnrich' AND status IN ('waiting', 'running', 'active') LIMIT 1`
+        `SELECT id FROM job_queue WHERE type = 'autoEnrich' AND status IN ('waiting', 'running', 'active', 'paused', 'delayed') LIMIT 1`
       ).get()
       if (existing) {
         return { success: true, jobId: existing.id, status: 'already_running', message: '已有补全任务在执行中' }

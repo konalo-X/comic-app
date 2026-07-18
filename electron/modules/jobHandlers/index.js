@@ -226,7 +226,7 @@ function startAutoTasks() {
     if (activeDownloads > 0 || activeSync > 0 || activeCrawl > 0) return
 
     const existing = jobQueue.db.prepare(
-      `SELECT id FROM job_queue WHERE type = 'sync' AND status IN ('waiting', 'running', 'active') LIMIT 1`
+      `SELECT id FROM job_queue WHERE type = 'sync' AND status IN ('waiting', 'running', 'active', 'paused', 'delayed') LIMIT 1`
     ).get()
     if (existing) return
 

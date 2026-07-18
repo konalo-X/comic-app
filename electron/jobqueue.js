@@ -183,11 +183,15 @@ class JobQueue {
 
   _rowToJob(row) {
     if (!row) return null
+    let parsedPayload = null
+    let parsedProgress = null
+    try { if (row.payload) parsedPayload = JSON.parse(row.payload) } catch (e) {}
+    try { if (row.progress) parsedProgress = JSON.parse(row.progress) } catch (e) {}
     return {
       id: row.id, type: row.type, priority: row.priority, status: row.status,
-      payload: row.payload ? JSON.parse(row.payload) : null,
+      payload: parsedPayload,
       error: row.error,
-      progress: row.progress ? JSON.parse(row.progress) : null,
+      progress: parsedProgress,
       retryCount: row.retry_count, maxRetries: row.max_retries,
       progressCurrent: row.progress_current, progressTotal: row.progress_total,
       timeout: row.timeout, delay: row.delay, repeatInterval: row.repeat_interval,

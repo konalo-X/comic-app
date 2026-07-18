@@ -89,7 +89,10 @@ async function jobHandlerRepairComic(job, onProgress) {
         console.warn(`[修复] 获取在线图片数失败 章节${i}: ${e.message}`)
         chapterOnlineCounts[i] = null
       }
-      if (i < chapters.length - 1) await sleep(800 + Math.random() * 1200)
+      if (i < chapters.length - 1) {
+        if (job.cancelled()) break
+        await sleep(800 + Math.random() * 1200)
+      }
     }
   }
 
@@ -168,7 +171,10 @@ async function jobHandlerRepairComic(job, onProgress) {
       console.warn(`[修复] 章节 ${chapterIdx} 修复失败: ${e.message}`)
     }
 
-    if (pi < problemChapters.length - 1) await sleep(1500 + Math.random() * 1500)
+    if (pi < problemChapters.length - 1) {
+      if (job.cancelled()) break
+      await sleep(1500 + Math.random() * 1500)
+    }
   }
 
   console.log(`[修复] ${comic.title} 完成: 修复${repairedChapters}章, 补下${totalImagesFixed}张图片`)

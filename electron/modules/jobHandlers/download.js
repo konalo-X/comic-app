@@ -281,7 +281,11 @@ async function jobHandlerDownloadComic(job, onProgress) {
         results.push({ error: e.message, chapter: chapters[i].name })
       }
       if (i < chapters.length - 1 && !job.cancelled()) {
-        await new Promise(r => setTimeout(r, 1500 + Math.random() * 1500))
+        const delay = 1500 + Math.random() * 1500
+        const start = Date.now()
+        while (Date.now() - start < delay && !job.cancelled()) {
+          await new Promise(r => setTimeout(r, Math.min(500, delay - (Date.now() - start))))
+        }
       }
     }
   }

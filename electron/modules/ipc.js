@@ -198,12 +198,16 @@ function registerAllIPC(deps) {
     const rows = jq.db.prepare(
       `SELECT id, type, status, payload FROM job_queue WHERE status IN ('waiting','running','active') ORDER BY created_at DESC`
     ).all()
-    return rows.map(row => ({
-      id: row.id.substring(0, 8),
-      type: row.type,
-      status: row.status,
-      payload: row.payload ? JSON.parse(row.payload) : null
-    }))
+    return rows.map(row => {
+      let parsed = null
+      try { if (row.payload) parsed = JSON.parse(row.payload) } catch (e) {}
+      return {
+        id: row.id.substring(0, 8),
+        type: row.type,
+        status: row.status,
+        payload: parsed
+      }
+    })
   })
 
   ipcMain.handle('db:setFavorite', async (_, comicId, favorited) => db.setFavorite(comicId, favorited))
@@ -483,7 +487,8 @@ function registerAllIPC(deps) {
       const toCancel = []
 
       for (const row of rows) {
-        const payload = JSON.parse(row.payload || '{}')
+        let payload
+        try { payload = JSON.parse(row.payload || '{}') } catch (e) { payload = {} }
         const comicTitle = payload.comicTitle
         const sourceUrl = payload.sourceUrl
         const key = sourceUrl || comicTitle
