@@ -1,55 +1,25 @@
 'use strict'
 
+const { createEnrichService } = require('../../services/enrichService')
+
 let jobQueue = null
 let autoTimers = []
+let _enrichService = null
 
-const VALID_CATEGORIES = ['日漫', '韩漫', '真人', '3D漫画', '同性']
-
-function deriveCategoryFromTags(...tagSources) {
-  for (const tags of tagSources) {
-    if (!tags) continue
-    const list = Array.isArray(tags) ? tags : String(tags).split(',')
-    for (const tag of list) {
-      const t = tag.trim()
-      if (!t) continue
-      const match = VALID_CATEGORIES.find(cat => t.includes(cat) || cat.includes(t))
-      if (match) return match.includes('3D') ? '3D漫画' : match
-    }
+function getEnrichService() {
+  if (!_enrichService) {
+    _enrichService = createEnrichService({ db: require('../../db'), sources: require('../../sources/registry'), jobQueue })
   }
-  return ''
+  return _enrichService
+}
+
+// 兼容旧接口，转发到 service 层
+function deriveCategoryFromTags(...tagSources) {
+  return getEnrichService().deriveCategoryFromTags(...tagSources)
 }
 
 async function enrichChapters(comic, chaptersToEnrich, source, cancelledFn = null) {
-  const imageCountUpdates = []
-  const chapterNameUpdates = []
-  for (let j = 0; j < chaptersToEnrich.length; j++) {
-    if (cancelledFn && cancelledFn()) break
-    try {
-      const pageList = await source.getPageList(chaptersToEnrich[j].url, comic.sourceUrl, cancelledFn)
-      const images = Array.isArray(pageList) ? pageList : (pageList.images || [])
-      const h2Name = (!Array.isArray(pageList) && pageList.chapterName) ? pageList.chapterName : ''
-
-      if (chaptersToEnrich[j].url) {
-        imageCountUpdates.push({ url: chaptersToEnrich[j].url, image_count: images.length })
-      }
-      if (h2Name && h2Name.trim() && h2Name.trim() !== chaptersToEnrich[j].name) {
-        chapterNameUpdates.push({ index: chaptersToEnrich[j].index, name: h2Name.trim() })
-      }
-      await new Promise(r => {
-        const t = setTimeout(r, 250)
-        if (cancelledFn) {
-          const check = setInterval(() => {
-            if (cancelledFn()) {
-              clearTimeout(t)
-              clearInterval(check)
-              r()
-            }
-          }, 100)
-        }
-      })
-    } catch (chE) {}
-  }
-  return { imageCountUpdates, chapterNameUpdates }
+  return getEnrichService().enrichChapters(comic, chaptersToEnrich, source, cancelledFn)
 }
 
 function addSyncJob(priority = 3) {

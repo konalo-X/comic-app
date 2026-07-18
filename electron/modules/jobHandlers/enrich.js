@@ -2,13 +2,18 @@
 
 const sources = require('../../sources/registry')
 const db = require('../../db')
-const { deriveCategoryFromTags, enrichChapters } = require('./helpers')
+const { createEnrichService } = require('../../services/enrichService')
+
+let _enrichService = null
+function getEnrichService() {
+  if (!_enrichService) {
+    _enrichService = createEnrichService({ db, sources, jobQueue: null })
+  }
+  return _enrichService
+}
 
 async function jobHandlerAutoEnrich(job, onProgress) {
-  // 方案2：单次只补有限批次（约20本），确保在默认5分钟超时内稳跑完（真实网络下每本约8-10s含SmartCrawl等待，
-  // 20本/3批 约50-70s，即使网络慢3倍也远在300s内），避免“一次性补全部→超时被杀→永远补不完”的死循环。
-  // 每次只取当前仍缺字段的漫画（getComicsWithMissingFields 已按缺字段过滤），
-  // 补完一本就从结果集消失，下一轮接着补，直到全部补全。
+  const service = getEnrichService()
   const AUTO_ENRICH_BATCH = 20
   const comics = await db.getComicsWithMissingFields(AUTO_ENRICH_BATCH)
   const total = comics.length
@@ -36,22 +41,7 @@ async function jobHandlerAutoEnrich(job, onProgress) {
           }
         }
         const source = comic.sourceUrl?.includes('smtt6') ? sources.get('smtt6') : sources.default
-        const detail = await source.getDetail(comic.sourceUrl, job.cancelled)
-
-        const category = detail.category || deriveCategoryFromTags(detail.tags, comic.tags)
-        await db.upsertComic({
-          sourceUrl: comic.sourceUrl,
-          title: detail.title || comic.title,
-          cover: detail.cover || comic.cover,
-          author: detail.author || '',
-          status: detail.status || '',
-          desc: detail.desc || '',
-          tags: detail.tags || [],
-          category,
-          updateTime: detail.updateTime || null,
-          chapters: detail.chapters || []
-        })
-
+        await service.enrichComicMetadata(comic, source, job.cancelled)
         enrichedCount++
         onProgress({ current: i + j + 1, total, msg: comic.title })
       } catch (e) {
@@ -76,6 +66,7 @@ async function jobHandlerAutoEnrich(job, onProgress) {
 }
 
 async function jobHandlerEnrichImageCounts(job, onProgress) {
+  const service = getEnrichService()
   let processed = 0, updated = 0, totalImgUpdated = 0, totalNameUpdated = 0, failed = 0
   const BATCH_SIZE = 8
   const MAX_CHAPTERS_PER_COMIC = 10
@@ -119,7 +110,7 @@ async function jobHandlerEnrichImageCounts(job, onProgress) {
           continue
         }
         const batch = chaptersToFix.slice(0, MAX_CHAPTERS_PER_COMIC)
-        const { imageCountUpdates, chapterNameUpdates } = await enrichChapters(comic, batch, source, job.cancelled)
+        const { imageCountUpdates, chapterNameUpdates } = await service.enrichChapters(comic, batch, source, job.cancelled)
 
         if (imageCountUpdates.length > 0) {
           await db.updateChapterImageCounts(comic._id, imageCountUpdates)
