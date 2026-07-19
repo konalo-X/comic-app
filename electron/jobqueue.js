@@ -661,7 +661,41 @@ class JobQueue {
     }
 
     if (this._paused) return
-    if (this._active.size >= this.concurrency) return
+
+    // 优先级抢占: 当 active 已满但有高优任务(priority <= 1) 等待时，暂停低优任务腾槽
+    if (this._active.size >= this.concurrency) {
+      const waiting = this.db.prepare(
+        `SELECT id, type, priority FROM job_queue WHERE status = 'waiting'
+        ORDER BY priority ASC, created_at ASC LIMIT 10`
+      ).all()
+      const highPriorityWaiting = waiting.filter(j => j.priority <= 1)
+      if (highPriorityWaiting.length > 0) {
+        // 找可抢占的低优 active 任务 (priority >= 2)
+        let lowestEntry = null
+        let lowestPriority = -1
+        let lowestId = null
+        for (const [id, entry] of this._active) {
+          if (entry.job.priority > lowestPriority && entry.job.priority >= 2) {
+            lowestPriority = entry.job.priority
+            lowestEntry = entry
+            lowestId = id
+          }
+        }
+        if (lowestEntry) {
+          logger.info(`[JobQueue] 优先级抢占: 暂停 ${lowestEntry.job.type}(p=${lowestPriority}) 为高优任务腾槽`)
+          lowestEntry.controller.cancelled = true
+          lowestEntry.controller._cancelled = true
+          lowestEntry.controller._preempted = true
+          this._active.delete(lowestId)
+          this._preemptReset(lowestId)
+          this._scheduleTick()
+        } else {
+          return
+        }
+      } else {
+        return
+      }
+    }
 
     if (!this._waitingDirty) return
     this._waitingDirty = false

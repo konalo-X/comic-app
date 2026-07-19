@@ -30,7 +30,7 @@ module.exports = {
   // ========== 类型并发限制 ==========
   TYPE_CONCURRENCY: {
     downloadChapter: env('TYPE_DL_CHAPTER', 3),
-    downloadComic: 1,
+    downloadComic: 3,
     sync: 1,
     crawlAll: 1,
     autoEnrich: 1,

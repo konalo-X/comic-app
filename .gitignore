@@ -31,3 +31,7 @@ mmexport*.JPG
 mmexport*.jpg
 # 旧代码备份（不应入库）
 *.bak
+
+# CodeGraph 本地索引（含图谱数据库，禁止入库）
+.codegraph/
+.codegraph

@@ -325,10 +325,20 @@ const taskGroups = computed(() => {
   }
   const groups = []
   for (const [comic, items] of map) {
-    const downloadingCount = items.filter(t => t.status === 'downloading').length
-    const queuedCount = items.filter(t => t.status === 'queued').length
-    const pausedCount = items.filter(t => t.status === 'paused').length
-    const doneCount = items.filter(t => t.status === 'done').length
+    const downloadingTasks = items.filter(t => t.status === 'downloading')
+    const queuedTasks = items.filter(t => t.status === 'queued')
+    const pausedTasks = items.filter(t => t.status === 'paused')
+    const doneTasks = items.filter(t => t.status === 'done')
+    const downloadingCount = downloadingTasks.length
+    const queuedCount = queuedTasks.length
+    const pausedCount = pausedTasks.length
+    const doneCount = doneTasks.length
+    // 对 downloadComic 任务统计其章节数 (total)，对 downloadChapter 任务统计 1 章
+    const sumChapters = (list) => list.reduce((sum, t) => sum + (t._unit === '章' ? (t.total || 0) : 1), 0)
+    const chapterCount = sumChapters(items)
+    const waitingChapterCount = sumChapters([...queuedTasks, ...pausedTasks])
+    const downloadingChapterCount = sumChapters(downloadingTasks)
+    const doneChapterCount = sumChapters(doneTasks)
     let groupStatus = 'queued'
     if (downloadingCount > 0) groupStatus = 'downloading'
     else if (pausedCount > 0 && queuedCount === 0) groupStatus = 'paused'
@@ -336,11 +346,15 @@ const taskGroups = computed(() => {
     groups.push({
       comic,
       items,
-      count: items.length,
+      count: chapterCount,
+      chapterCount,
       downloadingCount,
+      downloadingChapterCount,
       queuedCount,
+      waitingChapterCount,
       pausedCount,
       doneCount,
+      doneChapterCount,
       groupStatus,
       expanded: expandedGroups.value.has(comic)
     })
@@ -354,16 +368,16 @@ const taskGroups = computed(() => {
 })
 function groupStatusText(g) {
   const parts = []
-  if (g.downloadingCount) parts.push(`下载中 ${g.downloadingCount}`)
-  if (g.queuedCount) parts.push(`等待 ${g.queuedCount}`)
+  if (g.downloadingChapterCount) parts.push(`下载中 ${g.downloadingChapterCount}`)
+  if (g.waitingChapterCount) parts.push(`等待 ${g.waitingChapterCount}`)
   if (g.pausedCount) parts.push(`暂停 ${g.pausedCount}`)
-  if (g.doneCount) parts.push(`完成 ${g.doneCount}`)
+  if (g.doneChapterCount) parts.push(`完成 ${g.doneChapterCount}`)
   return parts.join(' · ')
 }
 function pauseGroup(g) { for (const t of g.items) if (t.status === 'downloading') pauseTask(t) }
 function resumeGroup(g) { for (const t of g.items) if (t.status === 'paused' || t.status === 'queued') resumeTask(t) }
 function removeGroup(g) {
-  if (!confirm(`确定移除「${g.comic}」的 ${g.count} 个下载任务?`)) return
+  if (!confirm(`确定移除「${g.comic}」的 ${g.items.length} 个下载任务 (${g.count} 章)?`)) return
   for (const t of [...g.items]) removeTask(t)
 }
 
