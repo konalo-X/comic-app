@@ -1192,7 +1192,11 @@ class JobQueue {
     }
 
     const typeOverrides = {
-      crawlAll: 30 * 60 * 1000
+      crawlAll: 30 * 60 * 1000,
+      // sync 单轮扫多本漫画(每本 getDetail 最多 150s + enrichChapters 最多 240s), 5 分钟默认超时必然掐死.
+      // 多处创建路径(addSyncJob 带 timeout, idle-sync/首次同步不带)导致 DB timeout 可能为 NULL,
+      // 故在此统一兜底为 60 分钟, 与 addSyncJob 的设计意图一致(Bug: sync 被 300s 超时反复掐死).
+      sync: 60 * 60 * 1000
     }
     const jobTimeout = typeOverrides[type] || timeout || this._defaultTimeout
 
