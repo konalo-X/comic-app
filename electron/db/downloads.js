@@ -1,19 +1,22 @@
 'use strict'
 
 const fs = require('fs')
-const { ensureDb } = require('./helpers')
+const { ensureDb, insertDownloadRecord } = require('./helpers')
 
 async function saveDownloadRecord(record) {
   const db = ensureDb()
   const { comicId, comicTitle, chapterIndex, chapterName, imagesCount, path: imgPath, status, error } = record
-  // status 默认 success(向后兼容); 不完整章传 'incomplete'。completed 同步反映。
-  const st = status || 'success'
-  db.prepare(`INSERT OR REPLACE INTO download_records
-    (comic_id, comic_title, chapter_index, chapter_name, images_count, path, downloaded_at, status, completed, error)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-    comicId || '', comicTitle || '', chapterIndex ?? 0, chapterName || '', imagesCount || 0, imgPath || '', Date.now(),
-    st, st === 'success' ? 1 : 0, error || null
-  )
+  // 委托给 helpers.insertDownloadRecord 统一实现, 避免分散维护 (保留两个 API 入口)
+  const safeChapterIndex = chapterIndex ?? 0
+  const chapter = {
+    chapterIndex: safeChapterIndex,
+    name: chapterName,
+    imageCount: imagesCount,
+    path: imgPath,
+    status,
+    error
+  }
+  insertDownloadRecord(db, comicId || '', comicTitle, chapter, safeChapterIndex, Date.now())
 }
 
 async function getDownloadRecords(filter = {}) {
