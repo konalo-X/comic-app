@@ -79,8 +79,13 @@ function runInTransaction(db, executor) {
 
 function insertDownloadRecord(db, comicId, comicTitle, chapter, index, downloadedAt) {
   const payload = buildDownloadRecordPayload(comicId, comicTitle, chapter, index, downloadedAt)
-  const stmt = db.prepare('INSERT INTO download_records (comic_id, comic_title, chapter_index, chapter_name, images_count, path, downloaded_at) VALUES (?,?,?,?,?,?,?)')
-  stmt.run(payload.comicId, payload.comicTitle, payload.chapterIndex, payload.chapterName, payload.imagesCount, payload.path, payload.downloadedAt)
+  // status 默认 success(向后兼容); 不完整章传 'incomplete'。completed 同步反映。
+  // 使用 INSERT OR REPLACE 避免 UNIQUE(comic_id, chapter_index) 冲突, 与 saveDownloadRecord 保持一致
+  const st = chapter.status || 'success'
+  const stmt = db.prepare(`INSERT OR REPLACE INTO download_records
+    (comic_id, comic_title, chapter_index, chapter_name, images_count, path, downloaded_at, status, completed, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  stmt.run(payload.comicId, payload.comicTitle, payload.chapterIndex, payload.chapterName, payload.imagesCount, payload.path, payload.downloadedAt, st, st === 'success' ? 1 : 0, chapter.error || null)
   return payload
 }
 

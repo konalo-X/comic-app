@@ -140,6 +140,25 @@ const migrations = [
         db.prepare("UPDATE comics SET sourceUrl = NULL WHERE sourceUrl = ''").run()
       }
     }
+  },
+
+  {
+    version: 5,
+    name: 'download_records_status_columns',
+    up(db) {
+      // 幂等添加 status/completed/error 列, 配合 saveDownloadRecord/insertDownloadRecord 写入
+      const cols = db.pragma('table_info(download_records)')
+      const names = new Set(cols.map(c => c.name))
+      if (!names.has('status')) {
+        db.exec('ALTER TABLE download_records ADD COLUMN status TEXT')
+      }
+      if (!names.has('completed')) {
+        db.exec('ALTER TABLE download_records ADD COLUMN completed INTEGER')
+      }
+      if (!names.has('error')) {
+        db.exec('ALTER TABLE download_records ADD COLUMN error TEXT')
+      }
+    }
   }
 ]
 
