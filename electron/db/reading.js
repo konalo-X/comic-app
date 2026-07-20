@@ -60,7 +60,7 @@ async function getImagesCount() {
 }
 
 async function getDownloadSize() {
-  ensureDb()
+  const db = ensureDb()
   const rows = db.prepare("SELECT DISTINCT path FROM download_records WHERE path IS NOT NULL AND path != ''").all()
   const paths = rows.map(v => v.path).filter(Boolean)
   let total = 0

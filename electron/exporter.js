@@ -256,11 +256,12 @@ class ArchiveExporter {
     zip.addFile('EPUB/chapters/all-pages.xhtml', Buffer.from(this._allPagesXHTML(allChapters)))
     manifestItems.push({ id: xhtmlId, href: 'chapters/all-pages.xhtml', mediaType: 'application/xhtml+xml' })
 
-    for (const ch of allChapters) {
+    for (let i = 0; i < allChapters.length; i++) {
+      const ch = allChapters[i]
       navPoints.push({
-        id: ch.chFolderName,
+        id: `ch_${i}`,
         label: ch.chFolderName,
-        src: `chapters/all-pages.xhtml#${ch.chFolderName}`
+        src: `chapters/all-pages.xhtml#ch_${i}`
       })
     }
 
@@ -330,6 +331,11 @@ html, body {
 }
 .comic-container {
     width: 100%;
+    line-height: 0;
+    font-size: 0;
+}
+.comic-container * {
+    line-height: 0;
 }
 .no-images {
     display: flex;
@@ -338,6 +344,7 @@ html, body {
     width: 100%;
     height: 100%;
     font-size: 18px;
+    line-height: 1.4;
     color: #666;
     text-align: center;
     background-color: #f5f5f5;
@@ -422,12 +429,12 @@ ${imgs}
   }
 
   _allPagesXHTML(allChapters) {
-    const sections = allChapters.map(ch => {
-      const anchor = `<a id="${escHtml(ch.chFolderName)}"></a>`
-      const imgs = ch.imgNames.map(n =>
-        `        <img src="../images/${n}" alt="${escHtml(ch.chName)}" class="comic-img"/>`
-      ).join('\n')
-      return `      ${anchor}\n${imgs}`
+    const sections = allChapters.map((ch, idx) => {
+      const imgs = ch.imgNames.map((n, j) => {
+        const idAttr = j === 0 ? ` id="ch_${idx}"` : ''
+        return `      <img src="../images/${n}" alt="${escHtml(ch.chName)}" class="comic-img"${idAttr}/>`
+      }).join('\n')
+      return imgs
     }).join('\n')
     return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
