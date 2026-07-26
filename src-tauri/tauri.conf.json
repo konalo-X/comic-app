@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Comic-Rust",
+  "version": "0.1.0",
+  "identifier": "com.konalo.comiv",
+  "build": {
+    "beforeDevCommand": "cd frontend && npx vite -c vite.config.js",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "cd frontend && npx vite build -c vite.config.js",
+    "frontendDist": "../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Comic-Rust",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}

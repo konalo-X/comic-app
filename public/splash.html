@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Comic App</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    /* 背景动画粒子 */
+    .particles {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .particle {
+      position: absolute;
+      width: 6px;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.3);
+      border-radius: 50%;
+      animation: float 15s infinite;
+    }
+
+    .particle:nth-child(1) { left: 10%; animation-delay: 0s; animation-duration: 12s; }
+    .particle:nth-child(2) { left: 20%; animation-delay: 1s; animation-duration: 15s; width: 8px; height: 8px; }
+    .particle:nth-child(3) { left: 30%; animation-delay: 2s; animation-duration: 10s; }
+    .particle:nth-child(4) { left: 40%; animation-delay: 0.5s; animation-duration: 18s; width: 4px; height: 4px; }
+    .particle:nth-child(5) { left: 50%; animation-delay: 3s; animation-duration: 14s; }
+    .particle:nth-child(6) { left: 60%; animation-delay: 1.5s; animation-duration: 16s; width: 10px; height: 10px; }
+    .particle:nth-child(7) { left: 70%; animation-delay: 2.5s; animation-duration: 11s; }
+    .particle:nth-child(8) { left: 80%; animation-delay: 0.8s; animation-duration: 13s; width: 5px; height: 5px; }
+    .particle:nth-child(9) { left: 90%; animation-delay: 3.5s; animation-duration: 17s; }
+    .particle:nth-child(10) { left: 15%; animation-delay: 4s; animation-duration: 12s; width: 7px; height: 7px; }
+
+    @keyframes float {
+      0% {
+        transform: translateY(100vh) rotate(0deg);
+        opacity: 0;
+      }
+      10% {
+        opacity: 1;
+      }
+      90% {
+        opacity: 1;
+      }
+      100% {
+        transform: translateY(-10vh) rotate(720deg);
+        opacity: 0;
+      }
+    }
+
+    /* 主容器 */
+    .splash-container {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      animation: containerFadeIn 0.8s ease-out;
+    }
+
+    @keyframes containerFadeIn {
+      from {
+        opacity: 0;
+        transform: scale(0.9);
+      }
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+
+    /* 图标 */
+    .app-icon {
+      width: 120px;
+      height: 120px;
+      margin-bottom: 30px;
+      animation: iconBounce 2s ease-in-out infinite;
+    }
+
+    @keyframes iconBounce {
+      0%, 100% {
+        transform: translateY(0);
+      }
+      50% {
+        transform: translateY(-10px);
+      }
+    }
+
+    /* 书本动画 */
+    .book-animation {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    .book {
+      width: 80px;
+      height: 100px;
+      background: white;
+      border-radius: 8px;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      animation: bookFlip 3s ease-in-out infinite;
+    }
+
+    .book::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 20px;
+      height: 100%;
+      background: linear-gradient(to right, #e0e0e0, #f0f0f0);
+      border-radius: 8px 0 0 8px;
+    }
+
+    .book-pages {
+      position: absolute;
+      right: 8px;
+      top: 10px;
+      width: 40px;
+      height: 6px;
+      background: #ff6b6b;
+      border-radius: 3px;
+      animation: pageGlow 2s ease-in-out infinite alternate;
+    }
+
+    .book-pages:nth-child(2) {
+      top: 22px;
+      width: 30px;
+      background: #4ecdc4;
+    }
+
+    .book-pages:nth-child(3) {
+      top: 34px;
+      width: 35px;
+      background: #ffe66d;
+    }
+
+    @keyframes bookFlip {
+      0%, 100% {
+        transform: translate(-50%, -50%) rotateY(0deg);
+      }
+      50% {
+        transform: translate(-50%, -50%) rotateY(-10deg);
+      }
+    }
+
+    @keyframes pageGlow {
+      from {
+        opacity: 0.7;
+      }
+      to {
+        opacity: 1;
+        box-shadow: 0 0 10px currentColor;
+      }
+    }
+
+    /* 标题 */
+    .app-title {
+      font-size: 32px;
+      font-weight: 700;
+      color: white;
+      margin-bottom: 10px;
+      letter-spacing: 2px;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+      animation: titleSlideIn 1s ease-out 0.3s both;
+    }
+
+    @keyframes titleSlideIn {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* 副标题 */
+    .app-subtitle {
+      font-size: 14px;
+      color: rgba(255, 255, 255, 0.8);
+      margin-bottom: 40px;
+      animation: titleSlideIn 1s ease-out 0.5s both;
+    }
+
+    /* 加载条 */
+    .loading-container {
+      width: 200px;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 2px;
+      overflow: hidden;
+      animation: titleSlideIn 1s ease-out 0.7s both;
+    }
+
+    .loading-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #ff6b6b, #4ecdc4, #ffe66d);
+      background-size: 200% 100%;
+      border-radius: 2px;
+      animation: loadingProgress 2s ease-in-out infinite, loadingGradient 3s linear infinite;
+    }
+
+    @keyframes loadingProgress {
+      0% {
+        width: 0%;
+        margin-left: 0%;
+      }
+      50% {
+        width: 60%;
+        margin-left: 20%;
+      }
+      100% {
+        width: 0%;
+        margin-left: 100%;
+      }
+    }
+
+    @keyframes loadingGradient {
+      0% {
+        background-position: 0% 50%;
+      }
+      100% {
+        background-position: 200% 50%;
+      }
+    }
+
+    /* 加载文字 */
+    .loading-text {
+      margin-top: 15px;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.6);
+      animation: textPulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes textPulse {
+      0%, 100% {
+        opacity: 0.6;
+      }
+      50% {
+        opacity: 1;
+      }
+    }
+
+    /* 版本号 */
+    .version {
+      position: absolute;
+      bottom: 20px;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.4);
+    }
+
+    /* 退出动画 */
+    .fade-out {
+      animation: fadeOut 0.5s ease-in forwards;
+    }
+
+    @keyframes fadeOut {
+      to {
+        opacity: 0;
+        transform: scale(1.1);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="particles">
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+  </div>
+
+  <div class="splash-container" id="splashContainer">
+    <div class="app-icon">
+      <div class="book-animation">
+        <div class="book">
+          <div class="book-pages"></div>
+          <div class="book-pages"></div>
+          <div class="book-pages"></div>
+        </div>
+      </div>
+    </div>
+
+    <h1 class="app-title">Comic App</h1>
+    <p class="app-subtitle">你的私人漫画管家</p>
+
+    <div class="loading-container">
+      <div class="loading-bar"></div>
+    </div>
+    <p class="loading-text" id="loadingText">正在初始化...</p>
+
+    <div class="version">v1.0.0</div>
+  </div>
+
+  <script>
+    const loadingTexts = [
+      '正在初始化...',
+      '加载数据库...',
+      '连接漫画源...',
+      '准备就绪'
+    ]
+    let textIndex = 0
+    const textElement = document.getElementById('loadingText')
+
+    setInterval(() => {
+      textIndex = (textIndex + 1) % loadingTexts.length
+      textElement.textContent = loadingTexts[textIndex]
+    }, 1500)
+
+    // 接收主进程消息
+    if (window.electronAPI) {
+      window.electronAPI.onSplashMessage((message) => {
+        if (message === 'fade-out') {
+          document.getElementById('splashContainer').classList.add('fade-out')
+        }
+      })
+    }
+  </script>
+</body>
+</html>

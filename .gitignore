@@ -1,0 +1,17 @@
+# 依赖 / 构建产物 / IDE
+**/node_modules
+**/src-tauri/target
+**/.vite
+**/frontend/dist
+.DS_Store
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# Tauri
+src-tauri/WixTools
+src-tauri/gen/android
+src-tauri/gen/apple
+src-tauri/gen/binary

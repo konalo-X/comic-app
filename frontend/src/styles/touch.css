@@ -1,0 +1,165 @@
+/* ====== 触控优化样式 ====== */
+
+/* 禁用双击缩放 */
+html {
+  touch-action: manipulation;
+  -ms-touch-action: manipulation;
+}
+
+/* 增大点击区域 */
+button, .btn, .nav-item, .icon-btn, .chapter-link, .page-link {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* 触控反馈 - 点击时缩小 */
+@media (hover: none) and (pointer: coarse) {
+  button:active, .btn:active, .nav-item:active, .icon-btn:active,
+  .chapter-link:active, .page-link:active, .card-hover:active {
+    transform: scale(0.96);
+    transition: transform 0.1s;
+  }
+}
+
+/* 优化滚动 - 弹性效果 */
+.scroll-touch {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* 防止文本选择（触控时） */
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* 增大表单元素 */
+input, select, textarea {
+  min-height: 44px;
+  font-size: 16px; /* 防止 iOS 缩放 */
+}
+
+/* 触控优化的卡片 */
+.card-touch {
+  touch-action: pan-y;
+  cursor: pointer;
+}
+
+/* 滑动手势区域 */
+.swipe-area {
+  touch-action: pan-y pinch-zoom;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 底部导航栏（移动端） */
+.mobile-nav {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 56px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  z-index: 100;
+  justify-content: space-around;
+  align-items: center;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.mobile-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: 1;
+  height: 100%;
+  color: var(--text-sub);
+  font-size: 10px;
+  transition: color 0.15s;
+}
+
+.mobile-nav-item.active {
+  color: var(--brand);
+}
+
+.mobile-nav-item .icon {
+  font-size: 20px;
+}
+
+/* 响应式布局 */
+@media (max-width: 768px) {
+  :root {
+    --sidebar-w: 0px;
+    --header-h: 48px;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .mobile-nav {
+    display: flex;
+  }
+
+  .main-content {
+    padding: 4px 8px;
+    padding-bottom: 68px; /* 为底部导航留空间 */
+  }
+
+  .footer-bar {
+    display: none;
+  }
+
+  /* 增大列表项 */
+  .list-item {
+    padding: 14px 16px;
+  }
+
+  /* 增大漫画卡片 */
+  .comic-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 12px !important;
+  }
+
+  .comic-card {
+    font-size: 14px;
+  }
+
+  /* 增大按钮 */
+  .btn {
+    padding: 10px 18px;
+    font-size: 14px;
+  }
+
+  /* 增大搜索框 */
+  .header-search {
+    width: 100%;
+    height: 40px;
+  }
+
+  /* 阅读器优化 */
+  .reader-toolbar {
+    padding: 12px 16px;
+  }
+
+  .reader-nav-btn {
+    min-height: 48px;
+    min-width: 48px;
+    font-size: 16px;
+  }
+}
+
+/* 平板适配 */
+@media (min-width: 769px) and (max-width: 1024px) {
+  :root {
+    --sidebar-w: 180px;
+  }
+
+  .comic-grid {
+    grid-template-columns: repeat(4, 1fr) !important;
+  }
+}
