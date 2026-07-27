@@ -98,6 +98,18 @@ function findComicDir(title, sourceUrl) {
     } catch (_) {}
   }
 
+  // 同名多本防串 (2026-07-27): 标题在库里不唯一时, 禁止按标题兕底找目录
+  // (会住进另一本的目录)。只信上面的 sourceUrl→local_path 精确路径;
+  // 返回 null 让上层 resolveUniqueComicDir 分配独立目录(自动加后缀)。
+  // 注意必须放在缓存检查之前: 缓存按标题键存, 同名两本会命中同一条缓存。
+  try {
+    const raw = db.getRawDB()
+    if (raw) {
+      const dup = raw.prepare('SELECT COUNT(*) AS n FROM comics WHERE title = ?').get(title)
+      if (dup && dup.n > 1) return null
+    }
+  } catch (_) {}
+
   const now = Date.now()
   const cacheKey = normalizeName(title)
   
@@ -552,17 +564,29 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
   await Promise.all(workers)
 
   if (job.cancelled()) {
+    // 取消时只统计已真正落盘的图片数（fs.existsSync 校验过的）
+    // 未落盘的 buffer 主动丢弃，不计入完成数，避免 DB 记录大于实际磁盘文件数
+    let downloadedOnDisk = 0
+    let pendingInBuffer = 0
     for (const [idx, buf] of imageBuffers) {
-      if (buf) {
+      if (!buf) continue
+      const outPath = path.join(chDir, `${String(idx + 1).padStart(3, '0')}.webp`)
+      if (fs.existsSync(outPath)) {
+        // 已真正落盘：保留计入完成
+        downloadedOnDisk++
         if (!state.completedIndices.includes(idx)) {
           state.completedIndices.push(idx)
         }
+      } else {
+        // 未落盘的 buffer 主动丢弃，仅计入 pending
+        pendingInBuffer++
       }
     }
     saveChapterState(chDir, state)
     return {
       cancelled: true,
-      downloaded: imageBuffers.size,
+      downloaded: downloadedOnDisk,
+      pending: pendingInBuffer,
       total: images.length,
       failedImages: currentFailedImages
     }
@@ -647,7 +671,8 @@ async function downloadAndConvert(url, filePath, referer) {
   }
   return 0
 }
-function downloadBuf(imageUrl, referer, timeoutMs = 30000) {
+const MAX_REDIRECTS = 5
+function downloadBuf(imageUrl, referer, timeoutMs = 30000, redirectsLeft = MAX_REDIRECTS) {
   return new Promise((resolve, reject) => {
     let settled = false
     const lib = imageUrl.startsWith('https') ? https : http
@@ -661,8 +686,11 @@ function downloadBuf(imageUrl, referer, timeoutMs = 30000) {
       if ([301, 302, 307, 308].includes(res.statusCode)) {
         req.destroy()
         settled = true
+        if (redirectsLeft <= 0) {
+          return reject(new Error(`重定向次数超过上限 (${MAX_REDIRECTS})`))
+        }
         const redirectUrl = new url.URL(res.headers.location, imageUrl).href
-        return resolve(downloadBuf(redirectUrl, referer, timeoutMs))
+        return resolve(downloadBuf(redirectUrl, referer, timeoutMs, redirectsLeft - 1))
       }
       if (res.statusCode !== 200) {
         req.destroy()
