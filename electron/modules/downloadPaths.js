@@ -60,7 +60,20 @@ function resolveUniqueComicDir(preferredPath, sourceUrl) {
     throw new Error(`[目录错误] resolveUniqueComicDir: preferredPath 不能是下载根目录: ${preferredPath}`)
   }
 
-  if (!fs.existsSync(preferredPath)) return preferredPath
+  // 预订机制 (2026-07-27): 选定目录后立即 mkdir + 回写 local_path。
+  // 否则两本同名漫画并发解析时(目录都还不存在)会拿到同一路径串本。
+  const reserve = (p) => {
+    try { fs.mkdirSync(p, { recursive: true }) } catch (_) {}
+    if (sourceUrl) {
+      try {
+        const raw = db.getRawDB()
+        if (raw) raw.prepare('UPDATE comics SET local_path = ? WHERE sourceUrl = ?').run(p, sourceUrl)
+      } catch (_) {}
+    }
+    return p
+  }
+
+  if (!fs.existsSync(preferredPath)) return reserve(preferredPath)
 
   if (sourceUrl) {
     try {
@@ -78,7 +91,7 @@ function resolveUniqueComicDir(preferredPath, sourceUrl) {
     candidate = `${preferredPath}_${counter}`
     counter++
   } while (fs.existsSync(candidate))
-  return candidate
+  return reserve(candidate)
 }
 
 function findComicDir(title, sourceUrl) {
@@ -101,12 +114,21 @@ function findComicDir(title, sourceUrl) {
   // 同名多本防串 (2026-07-27): 标题在库里不唯一时, 禁止按标题兕底找目录
   // (会住进另一本的目录)。只信上面的 sourceUrl→local_path 精确路径;
   // 返回 null 让上层 resolveUniqueComicDir 分配独立目录(自动加后缀)。
-  // 注意必须放在缓存检查之前: 缓存按标题键存, 同名两本会命中同一条缓存。
+  // 注意: ① 必须放在缓存检查之前(缓存按标题键存, 同名两本命中同一条);
+  // ② 传入标题(源站)与库内标题可能有全角/半角差异, 必须两边都查,
+  //   否则源站标题查重=1 会绕过检查(2026-07-27 实测踩坑)。
   try {
     const raw = db.getRawDB()
     if (raw) {
-      const dup = raw.prepare('SELECT COUNT(*) AS n FROM comics WHERE title = ?').get(title)
-      if (dup && dup.n > 1) return null
+      const dupStmt = raw.prepare('SELECT COUNT(*) AS n FROM comics WHERE title = ?')
+      let dupN = dupStmt.get(title)?.n || 0
+      if (sourceUrl) {
+        const own = raw.prepare('SELECT title FROM comics WHERE sourceUrl = ?').get(sourceUrl)
+        if (own?.title && own.title !== title) {
+          dupN = Math.max(dupN, dupStmt.get(own.title)?.n || 0)
+        }
+      }
+      if (dupN > 1) return null
     }
   } catch (_) {}
 
