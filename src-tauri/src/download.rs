@@ -32,8 +32,14 @@ pub struct DownloadResult {
 }
 
 /// 解析漫画目录：优先 local_path/已存在目录，否则在主下载根下新建 sanitize(title)
+/// 同名多本防串 (2026-07-27, 同步 comic-app 修复):
+/// - 标题在库里不唯一时, 禁止按标题兕底找已有目录(会住进另一本的目录)
+/// - 新目录被占用时自动加 _N 后缀
+/// - 预订机制: 选定后立即 mkdir + 回写 local_path, 封死并发竞态
 fn resolve_comic_dir(
+    conn: &Connection,
     comic_title: &str,
+    source_url: &str,
     local_path: Option<&str>,
     external_root: Option<&str>,
 ) -> Result<PathBuf, String> {
@@ -43,8 +49,18 @@ fn resolve_comic_dir(
             return Ok(p);
         }
     }
-    if let Some(dir) = paths::find_comic_dir(comic_title, local_path, external_root) {
-        return Ok(dir);
+    // 同名检查: 标题不唯一则跳过“按标题找已有目录”兕底
+    let dup: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM comics WHERE title = ?",
+            [comic_title],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if dup <= 1 {
+        if let Some(dir) = paths::find_comic_dir(comic_title, local_path, external_root) {
+            return Ok(dir);
+        }
     }
     // 主下载根（外部盘优先，其存在时）
     let roots = paths::download_roots(external_root);
@@ -57,7 +73,22 @@ fn resolve_comic_dir(
     if primary.to_string_lossy().starts_with("/Volumes/") && !primary.exists() {
         return Err(format!("下载磁盘未挂载: {}", primary.display()));
     }
-    let dir = primary.join(paths::sanitize_filename(comic_title));
+    let base = primary.join(paths::sanitize_filename(comic_title));
+    // 唯一目录分配: 被占用则加 _N 后缀
+    let mut dir = base.clone();
+    let mut counter = 1u32;
+    while dir.exists() {
+        dir = PathBuf::from(format!("{}_{}", base.to_string_lossy(), counter));
+        counter += 1;
+    }
+    // 预订: 立即建目录 + 回写 local_path(同名第二本再来时 exists()=true 自动错开)
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建漫画目录失败: {}", e))?;
+    if !source_url.is_empty() {
+        let _ = conn.execute(
+            "UPDATE comics SET local_path = ? WHERE sourceUrl = ?",
+            rusqlite::params![dir.to_string_lossy(), source_url],
+        );
+    }
     Ok(dir)
 }
 
@@ -272,10 +303,18 @@ pub fn persist_chapter_result(
     } else {
         "partial"
     };
+    // comic_id 归一化 (2026-07-27, 同步 comic-app 修复):
+    // 历史上直接用 source_url 当 comic_id, 与内部 c_ id 并存产生重复记录。
+    // 统一解析成 comics.id; 查不到才退化保留原值。
     let comic_id = if job.source_url.is_empty() {
         job.comic_title.clone()
     } else {
-        job.source_url.clone()
+        conn.query_row(
+            "SELECT id FROM comics WHERE sourceUrl = ? LIMIT 1",
+            [&job.source_url],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| job.source_url.clone())
     };
     conn.execute(
         "INSERT OR REPLACE INTO download_records \
@@ -309,11 +348,13 @@ pub fn persist_chapter_result(
 }
 
 pub fn resolve_dir_for(
+    conn: &Connection,
     comic_title: &str,
+    source_url: &str,
     local_path: Option<&str>,
     external_root: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let dir = resolve_comic_dir(comic_title, local_path, external_root)?;
+    let dir = resolve_comic_dir(conn, comic_title, source_url, local_path, external_root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建漫画目录失败: {}", e))?;
     Ok(dir)
 }

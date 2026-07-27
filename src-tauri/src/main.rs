@@ -1455,6 +1455,17 @@ fn main() {
                 .map_err(|e| format!("打开数据库失败 {}: {}", path, e))?;
             conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
                 .ok();
+            // download_records 去重保障 (2026-07-27, 同步 comic-app migration v6, 幂等):
+            // 旧索引非 UNIQUE 导致 INSERT OR REPLACE 从未真正去重。
+            // 先清存量重复(每组留最新), 再重建为 UNIQUE 索引。
+            conn.execute_batch(
+                "DELETE FROM download_records WHERE id NOT IN (\
+                    SELECT MAX(id) FROM download_records GROUP BY comic_id, chapter_index);\
+                 DROP INDEX IF EXISTS idx_downloads_comic_chapter;\
+                 CREATE UNIQUE INDEX IF NOT EXISTS idx_downloads_comic_chapter \
+                    ON download_records(comic_id, chapter_index);",
+            )
+            .ok();
             let external = settings::external_download_root();
             eprintln!("[comiv] DB={} external_root={:?}", path, external);
 

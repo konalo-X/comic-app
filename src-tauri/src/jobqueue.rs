@@ -593,16 +593,21 @@ impl JobQueue {
         }
 
         let external = settings::external_download_root();
-        // local_path 查询
-        let local_path = {
+        // local_path 查询 + 目录解析(同名防串/预订需要 conn)
+        let comic_dir = {
             let c = self.conn().map_err(|e| e.to_string())?;
-            crate::db::get_comic_by_url(&c, &source_url)
+            let local_path = crate::db::get_comic_by_url(&c, &source_url)
                 .ok()
                 .flatten()
-                .and_then(|cm| cm.local_path)
+                .and_then(|cm| cm.local_path);
+            download::resolve_dir_for(
+                &c,
+                &comic_title,
+                &source_url,
+                local_path.as_deref(),
+                external.as_deref(),
+            )?
         };
-        let comic_dir =
-            download::resolve_dir_for(&comic_title, local_path.as_deref(), external.as_deref())?;
 
         let cj = download::ChapterJob {
             comic_title: comic_title.clone(),

@@ -83,7 +83,17 @@ pub fn run_sync(
         }
 
         // 磁盘缺章检测
-        let comic_dir = paths::find_comic_dir(&title, comic.local_path.as_deref(), external.as_deref());
+        // 同名多本防串 (2026-07-27): 标题不唯一且无 local_path 时,
+        // 按标题找目录会命中另一本的目录导致误判"已下载"而跳章。
+        // 此时视为无本地目录, 缺章全部入队, 由下载处理器分配独立目录。
+        let title_dup: i64 = conn
+            .query_row("SELECT COUNT(*) FROM comics WHERE title = ?", [&title], |r| r.get(0))
+            .unwrap_or(0);
+        let comic_dir = if title_dup > 1 && comic.local_path.as_deref().map_or(true, |s| s.is_empty()) {
+            None
+        } else {
+            paths::find_comic_dir(&title, comic.local_path.as_deref(), external.as_deref())
+        };
         let mut queued_this = 0usize;
         let mut seen = std::collections::HashSet::new();
         for (idx, ch) in detail.chapters.iter().enumerate() {
