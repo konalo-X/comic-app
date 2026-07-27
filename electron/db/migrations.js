@@ -159,6 +159,36 @@ const migrations = [
         db.exec('ALTER TABLE download_records ADD COLUMN error TEXT')
       }
     }
+  },
+
+  {
+    version: 6,
+    name: 'download_records_dedup_and_unique_index',
+    up(db) {
+      // 根治重复下载记录 (2026-07-27):
+      // 1) URL 型 comic_id 归一化为内部 comics.id (能匹配到的才改, 孤儿保留)
+      // 2) (comic_id, chapter_index) 去重, 每组保留最新一条 (MAX(id))
+      // 3) 旧索引非 UNIQUE, 导致 INSERT OR REPLACE 从未真正去重 —— 重建为 UNIQUE
+      db.exec(`
+        UPDATE download_records SET comic_id = (
+          SELECT c.id FROM comics c WHERE c.sourceUrl = download_records.comic_id
+        )
+        WHERE comic_id LIKE 'http%'
+          AND EXISTS (SELECT 1 FROM comics c WHERE c.sourceUrl = download_records.comic_id)
+          AND NOT EXISTS (
+            SELECT 1 FROM download_records d2
+            WHERE d2.comic_id = (SELECT c.id FROM comics c WHERE c.sourceUrl = download_records.comic_id)
+              AND d2.chapter_index = download_records.chapter_index
+          )
+      `)
+      db.exec(`
+        DELETE FROM download_records WHERE id NOT IN (
+          SELECT MAX(id) FROM download_records GROUP BY comic_id, chapter_index
+        )
+      `)
+      db.exec('DROP INDEX IF EXISTS idx_downloads_comic_chapter')
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_downloads_comic_chapter ON download_records(comic_id, chapter_index)')
+    }
   }
 ]
 

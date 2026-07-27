@@ -167,6 +167,13 @@ async function importLocalComic(comic, targetRoot, sourceUrl, destDir) {
 
   const now = Date.now()
   const id = sourceUrl || crypto.randomUUID()
+  // 实际写入 download_records 的 comic_id: 必须用 comics 表里真实的内部 id,
+  // 不能用 sourceUrl 当 id(历史 bug: 产生 URL 型重复记录)。
+  let recordComicId = id
+  if (sourceUrl) {
+    const existing = db.prepare('SELECT id, favorited FROM comics WHERE sourceUrl = ?').get(sourceUrl)
+    if (existing) recordComicId = existing.id
+  }
   if (sourceUrl) {
     const existing = db.prepare('SELECT id, favorited FROM comics WHERE sourceUrl = ?').get(sourceUrl)
     if (existing) {
@@ -203,7 +210,7 @@ async function importLocalComic(comic, targetRoot, sourceUrl, destDir) {
   }
 
   for (const ch of dbChapters) {
-    insertDownloadRecord(db, sourceUrl || id, comic.title, ch, ch.index, now)
+    insertDownloadRecord(db, recordComicId, comic.title, ch, ch.index, now)
   }
 
   return { success: true, title: comic.title, chapterCount: comic.chapters.length }
