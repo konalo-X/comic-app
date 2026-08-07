@@ -15,3 +15,7 @@ src-tauri/WixTools
 src-tauri/gen/android
 src-tauri/gen/apple
 src-tauri/gen/binary
+
+# SwiftPM
+.build/
+DerivedData/
