@@ -8,13 +8,16 @@ struct Comic: Identifiable, Codable, Hashable {
     var author: String?
     var cover: String?
     var localCover: String?
+    var localPath: String?
     var descText: String?
     var status: String?
     var tags: String?
     var category: String?
+    var chapterNamesEnriched: Int = 0
     var favorited: Int = 0
     var createdAt: Int64
     var updatedAt: Int64
+    var updateTime: Int64 = 0
     var lastSync: Int64 = 0
     var lastRead: Int64 = 0
     var updateDelta: Int = 0
@@ -28,13 +31,16 @@ struct Comic: Identifiable, Codable, Hashable {
          author: String? = nil,
          cover: String? = nil,
          localCover: String? = nil,
+         localPath: String? = nil,
          descText: String? = nil,
          status: String? = nil,
          tags: String? = nil,
          category: String? = nil,
+         chapterNamesEnriched: Int = 0,
          favorited: Int = 0,
          createdAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
          updatedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
+         updateTime: Int64 = 0,
          lastSync: Int64 = 0,
          lastRead: Int64 = 0,
          updateDelta: Int = 0,
@@ -47,13 +53,16 @@ struct Comic: Identifiable, Codable, Hashable {
         self.author = author
         self.cover = cover
         self.localCover = localCover
+        self.localPath = localPath
         self.descText = descText
         self.status = status
         self.tags = tags
         self.category = category
+        self.chapterNamesEnriched = chapterNamesEnriched
         self.favorited = favorited
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.updateTime = updateTime
         self.lastSync = lastSync
         self.lastRead = lastRead
         self.updateDelta = updateDelta
@@ -134,6 +143,8 @@ enum DownloadStatus: String, Codable, CaseIterable, Hashable {
     case missing
     case corrupted
     case downloading
+    case pending
+    case failed
 }
 
 struct DownloadRecord: Identifiable, Codable, Hashable {
@@ -148,8 +159,11 @@ struct DownloadRecord: Identifiable, Codable, Hashable {
     var imagesCount: Int
     var totalSize: Int64
     var status: DownloadStatus = .completed
+    var completed: Int = 0
+    var error: String?
     var createdAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     var updatedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    var downloadedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
 }
 
 enum JobStatus: String, Codable, CaseIterable, Hashable {
@@ -158,6 +172,7 @@ enum JobStatus: String, Codable, CaseIterable, Hashable {
     case completed
     case failed
     case cancelled
+    case paused
     
     var label: String {
         switch self {
@@ -166,6 +181,7 @@ enum JobStatus: String, Codable, CaseIterable, Hashable {
         case .completed: return "完成"
         case .failed: return "失败"
         case .cancelled: return "取消"
+        case .paused: return "暂停"
         }
     }
 }
@@ -176,6 +192,8 @@ enum JobType: String, Codable, CaseIterable, Hashable {
     case enrich
     case repair
     case crawl
+    case importComic
+    case export
 }
 
 struct Job: Identifiable, Codable, Hashable {
@@ -246,6 +264,86 @@ struct SourceInfo: Identifiable, Hashable, Codable, Sendable {
         self.default = `default`
         self.description = description
     }
+}
+
+struct CrawlProgress: Identifiable, Codable, Hashable {
+    var id: String = UUID().uuidString
+    var url: String
+    var title: String?
+    var status: String = "pending"
+    var retryCount: Int = 0
+    var lastError: String?
+    var createdAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    var updatedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+}
+
+struct FailureStat: Identifiable, Codable, Hashable {
+    var id: String = UUID().uuidString
+    var reason: String
+    var count: Int = 0
+    var lastUpdate: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+}
+
+struct CategoryStat: Identifiable, Codable, Hashable {
+    var id: String { name }
+    let name: String
+    let count: Int
+}
+
+struct ReadingStats: Codable, Hashable {
+    var booksReadCount: Int = 0
+    var chaptersReadCount: Int = 0
+    var imagesReadCount: Int = 0
+    var totalReadTimeMs: Int64 = 0
+    var currentStreakDays: Int = 0
+    var longestStreakDays: Int = 0
+    var history: [ReadingProgress] = []
+}
+
+struct DownloadStats: Codable, Hashable {
+    var totalRecords: Int = 0
+    var totalComics: Int = 0
+    var totalSizeBytes: Int64 = 0
+    var totalImages: Int = 0
+}
+
+struct HealthCheckResult: Codable, Hashable {
+    enum Level: String, Codable { case ok, missing, corrupted }
+    let comicId: String
+    let comicTitle: String
+    let chapterIndex: Int
+    let chapterName: String?
+    let level: Level
+    let detail: String
+}
+
+struct ExportOptions: Codable, Hashable {
+    enum Format: String, Codable { case cbz, epub }
+    enum ChapterMode: String, Codable { case single, perChapter, perVolume }
+    var format: Format = .epub
+    var chapterMode: ChapterMode = .perChapter
+    var chaptersPerVolume: Int = 20
+    var imageQuality: Double = 0.9
+    var language: String = "zh-CN"
+    var includeCover: Bool = true
+    var includeTableOfContents: Bool = true
+    var comicTitle: String?
+    var author: String?
+}
+
+struct ScannedLocalComic: Codable, Hashable {
+    var title: String
+    var path: String
+    var chapterDirectories: [String] = []
+    var existingComicId: String?
+}
+
+struct ShortcutDef: Codable, Hashable, Identifiable {
+    var id: String { key }
+    let key: String
+    let description: String
+    let defaultKey: String
+    var currentKey: String
 }
 
 protocol ComicSource: AnyObject {

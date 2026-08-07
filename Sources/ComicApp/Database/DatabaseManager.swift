@@ -35,6 +35,7 @@ final class DatabaseManager: @unchecked Sendable {
     
     private func createTables() throws {
         guard let db else { return }
+        
         let comics = Table("comics")
         let idCol = Expression<String>("id")
         let sourceIdCol = Expression<String?>("sourceId")
@@ -43,13 +44,16 @@ final class DatabaseManager: @unchecked Sendable {
         let authorCol = Expression<String?>("author")
         let coverCol = Expression<String?>("cover")
         let localCoverCol = Expression<String?>("localCover")
+        let localPathCol = Expression<String?>("localPath")
         let descCol = Expression<String?>("descText")
         let statusCol = Expression<String?>("status")
         let tagsCol = Expression<String?>("tags")
         let categoryCol = Expression<String?>("category")
+        let chapterNamesEnrichedCol = Expression<Int>("chapterNamesEnriched")
         let favoritedCol = Expression<Int>("favorited")
         let createdAtCol = Expression<Int64>("createdAt")
         let updatedAtCol = Expression<Int64>("updatedAt")
+        let updateTimeCol = Expression<Int64>("updateTime")
         let lastSyncCol = Expression<Int64>("lastSync")
         let lastReadCol = Expression<Int64>("lastRead")
         let updateDeltaCol = Expression<Int>("updateDelta")
@@ -63,13 +67,16 @@ final class DatabaseManager: @unchecked Sendable {
             t.column(authorCol)
             t.column(coverCol)
             t.column(localCoverCol)
+            t.column(localPathCol)
             t.column(descCol)
             t.column(statusCol)
             t.column(tagsCol)
             t.column(categoryCol)
+            t.column(chapterNamesEnrichedCol, defaultValue: 0)
             t.column(favoritedCol, defaultValue: 0)
             t.column(createdAtCol)
             t.column(updatedAtCol)
+            t.column(updateTimeCol, defaultValue: 0)
             t.column(lastSyncCol, defaultValue: 0)
             t.column(lastReadCol, defaultValue: 0)
             t.column(updateDeltaCol, defaultValue: 0)
@@ -81,6 +88,10 @@ final class DatabaseManager: @unchecked Sendable {
         try db.run(comics.createIndex(categoryCol, ifNotExists: true))
         try db.run(comics.createIndex(favoritedCol, ifNotExists: true))
         try db.run(comics.createIndex(updatedAtCol, ifNotExists: true))
+        
+        do { try db.run(comics.addColumn(localPathCol)) } catch {}
+        do { try db.run(comics.addColumn(chapterNamesEnrichedCol, defaultValue: 0)) } catch {}
+        do { try db.run(comics.addColumn(updateTimeCol, defaultValue: 0)) } catch {}
         
         let chapters = Table("chapters")
         let cIdCol = Expression<String>("id")
@@ -104,7 +115,7 @@ final class DatabaseManager: @unchecked Sendable {
             t.foreignKey(cComicIdCol, references: comics, idCol, delete: .cascade)
         })
         try db.run(chapters.createIndex(cComicIdCol, ifNotExists: true))
-        try db.run(chapters.createIndex(cOrderCol, ifNotExists: true))
+        try db.run(chapters.createIndex([cComicIdCol, cOrderCol], ifNotExists: true))
         
         let progress = Table("reading_progress")
         let pIdCol = Expression<String>("id")
@@ -119,7 +130,7 @@ final class DatabaseManager: @unchecked Sendable {
         
         try db.run(progress.create(ifNotExists: true) { t in
             t.column(pIdCol, primaryKey: true)
-            t.column(pComicIdCol, unique: true)
+            t.column(pComicIdCol)
             t.column(pChapterIdxCol)
             t.column(pChapterUrlCol)
             t.column(pPageIdxCol)
@@ -128,8 +139,10 @@ final class DatabaseManager: @unchecked Sendable {
             t.column(pCreatedAtCol)
             t.column(pUpdatedAtCol)
         })
+        try db.run(progress.createIndex(pComicIdCol, ifNotExists: true))
+        try db.run(progress.createIndex(pUpdatedAtCol, ifNotExists: true))
         
-        let downloads = Table("downloads")
+        let downloads = Table("download_records")
         let dIdCol = Expression<String>("id")
         let dComicIdCol = Expression<String>("comicId")
         let dComicTitleCol = Expression<String>("comicTitle")
@@ -141,6 +154,9 @@ final class DatabaseManager: @unchecked Sendable {
         let dCountCol = Expression<Int>("imagesCount")
         let dSizeCol = Expression<Int64>("totalSize")
         let dStatusCol = Expression<String>("status")
+        let dCompletedCol = Expression<Int>("completed")
+        let dErrorCol = Expression<String?>("error")
+        let dDownloadedAtCol = Expression<Int64>("downloadedAt")
         let dCreatedAtCol = Expression<Int64>("createdAt")
         let dUpdatedAtCol = Expression<Int64>("updatedAt")
         
@@ -156,14 +172,50 @@ final class DatabaseManager: @unchecked Sendable {
             t.column(dCountCol, defaultValue: 0)
             t.column(dSizeCol, defaultValue: 0)
             t.column(dStatusCol, defaultValue: "completed")
+            t.column(dCompletedCol, defaultValue: 0)
+            t.column(dErrorCol)
+            t.column(dDownloadedAtCol, defaultValue: 0)
             t.column(dCreatedAtCol)
             t.column(dUpdatedAtCol)
+            t.unique(dComicIdCol, dChapterIndexCol)
         })
         try db.run(downloads.createIndex(dComicIdCol, ifNotExists: true))
+        try db.run(downloads.createIndex(dComicTitleCol, ifNotExists: true))
         try db.run(downloads.createIndex(dChapterIndexCol, ifNotExists: true))
-        do {
-            try db.run(downloads.addColumn(dStatusCol, defaultValue: "completed"))
-        } catch {}
+        
+        let crawl = Table("crawl_progress")
+        let crId = Expression<String>("id")
+        let crUrl = Expression<String>("url")
+        let crTitle = Expression<String?>("title")
+        let crStatus = Expression<String>("status")
+        let crRetry = Expression<Int>("retryCount")
+        let crError = Expression<String?>("lastError")
+        let crCreated = Expression<Int64>("createdAt")
+        let crUpdated = Expression<Int64>("updatedAt")
+        try db.run(crawl.create(ifNotExists: true) { t in
+            t.column(crId, primaryKey: true)
+            t.column(crUrl, unique: true)
+            t.column(crTitle)
+            t.column(crStatus, defaultValue: "pending")
+            t.column(crRetry, defaultValue: 0)
+            t.column(crError)
+            t.column(crCreated)
+            t.column(crUpdated)
+        })
+        try db.run(crawl.createIndex(crStatus, ifNotExists: true))
+        try db.run(crawl.createIndex(crCreated, ifNotExists: true))
+        
+        let failures = Table("failure_stats")
+        let fId = Expression<String>("id")
+        let fReason = Expression<String>("reason")
+        let fCount = Expression<Int>("count")
+        let fUpdated = Expression<Int64>("lastUpdate")
+        try db.run(failures.create(ifNotExists: true) { t in
+            t.column(fId, primaryKey: true)
+            t.column(fReason, unique: true)
+            t.column(fCount, defaultValue: 0)
+            t.column(fUpdated)
+        })
         
         let jobs = Table("jobs")
         let jIdCol = Expression<String>("id")

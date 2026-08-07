@@ -58,7 +58,7 @@ final class AppStore: ObservableObject {
     func refreshCategories() {
         Task {
             let cats = (try? repo.allCategories()) ?? []
-            await MainActor.run { self.categories = cats }
+            await MainActor.run { self.categories = cats.map { $0.name } }
         }
     }
     

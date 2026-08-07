@@ -281,6 +281,34 @@ final class ExportService: @unchecked Sendable {
         let epub = CacheManager.shared.getDownloadsDir().appendingPathComponent("\(safe).epub").path
         return FileManager.default.fileExists(atPath: epub)
     }
+    
+    nonisolated func handleExportJob(job: Job, queue: JobQueue) async throws {
+        let format = (job.payload["format"] ?? "cbz").lowercased()
+        let comicTitle = job.payload["comicTitle"] ?? ""
+        guard !comicTitle.isEmpty else {
+            throw NSError(domain: "ExportService", code: 400, userInfo: [NSLocalizedDescriptionKey: "缺少漫画标题"])
+        }
+        await MainActor.run {
+            queue.reportProgress(jobId: job.id, progress: 0.05, message: "准备导出 \(comicTitle)...")
+        }
+        let _: URL
+        if format == "epub" {
+            _ = try await toEPUB(comicTitle: comicTitle) { prog, msg in
+                Task { @MainActor in
+                    queue.reportProgress(jobId: job.id, progress: 0.05 + 0.9 * prog, message: msg)
+                }
+            }
+        } else {
+            _ = try await toCBZ(comicTitle: comicTitle) { prog, msg in
+                Task { @MainActor in
+                    queue.reportProgress(jobId: job.id, progress: 0.05 + 0.9 * prog, message: msg)
+                }
+            }
+        }
+        await MainActor.run {
+            queue.reportProgress(jobId: job.id, progress: 1.0, message: "导出完成")
+        }
+    }
 }
 
 extension String {

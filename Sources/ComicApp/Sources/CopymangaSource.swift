@@ -106,7 +106,7 @@ final class CopymangaSource: ComicSource {
             throw NSError(domain: id, code: 400, userInfo: [NSLocalizedDescriptionKey: "无效章节URL"])
         }
         let contentUrl = "\(apiBase)/api/v3/comic/\(pwd)/chapter2/\(uuid)?platform=1"
-        let data = try await NetworkManager.shared.getData(contentUrl, referer: chapterUrl ?? baseURL, retries: 3, accept: "application/json, text/plain, */*")
+        let data = try await NetworkManager.shared.getData(contentUrl, referer: chapterUrl, retries: 3, accept: "application/json, text/plain, */*")
         guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let r = j["results"] as? [String: Any],
               let ch = r["chapter"] as? [String: Any],

@@ -23,6 +23,7 @@ final class JobQueue: ObservableObject {
             case .completed: completed += 1
             case .failed: failed += 1
             case .cancelled: cancelled += 1
+            case .paused: pending += 1
             }
         }
         return (pending, running, completed, failed, cancelled)
@@ -155,7 +156,7 @@ final class JobQueue: ObservableObject {
     
     private func processQueue() {
         while runningCount < maxConcurrent {
-            guard let pendingIdx = jobs.firstIndex(where: { $0.status == .pending }) else {
+            guard jobs.contains(where: { $0.status == .pending }) else {
                 return
             }
             var sortedPending: [(Int, Job)] = []
@@ -204,6 +205,12 @@ final class JobQueue: ObservableObject {
                 try await RepairService.shared.repair(job: job, queue: self)
             case .crawl:
                 try await CrawlService.shared.crawl(job: job, queue: self)
+            case .importComic:
+                await MainActor.run {
+                    self.updateJob(id: id) { $0.message = "导入功能待实现"; $0.progress = 1.0 }
+                }
+            case .export:
+                try await ExportService.shared.handleExportJob(job: job, queue: self)
             }
             await MainActor.run {
                 self.updateJob(id: id) { $0.status = .completed; $0.progress = 1.0 }
@@ -235,7 +242,7 @@ final class JobQueue: ObservableObject {
     func checkCancelled(jobId: String) async -> Bool {
         await MainActor.run {
             JobQueue.shared.jobs.first { $0.id == jobId }?.status == .cancelled
-        } ?? false
+        }
     }
     
     nonisolated func reportProgress(jobId: String, progress: Double, message: String? = nil) {

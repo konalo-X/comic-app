@@ -133,6 +133,7 @@ struct DownloadPageView: View {
         case .completed: return "已完成"
         case .failed: return "失败"
         case .cancelled: return "已取消"
+        case .paused: return "已暂停"
         }
     }
 }
@@ -203,6 +204,8 @@ struct JobRow: View {
         case .enrich: return Image(systemName: "sparkles").foregroundStyle(.yellow)
         case .repair: return Image(systemName: "wrench.and.screwdriver").foregroundStyle(.orange)
         case .crawl: return Image(systemName: "ladybug").foregroundStyle(.green)
+        case .importComic: return Image(systemName: "square.and.arrow.up").foregroundStyle(.teal)
+        case .export: return Image(systemName: "square.and.arrow.up.on.square").foregroundStyle(.indigo)
         }
     }
     
@@ -213,6 +216,8 @@ struct JobRow: View {
         case .enrich: return .yellow
         case .repair: return .orange
         case .crawl: return .green
+        case .importComic: return .teal
+        case .export: return .indigo
         }
     }
     
@@ -225,6 +230,7 @@ struct JobRow: View {
         case .completed: text = "完成"; color = .green
         case .failed: text = "失败"; color = .red
         case .cancelled: text = "取消"; color = .gray
+        case .paused: text = "暂停"; color = .secondary
         }
         return Text(text)
             .font(.system(size: 10, weight: .semibold))
@@ -245,6 +251,10 @@ struct JobRow: View {
         case .enrich: return "补齐章节名称/图片数"
         case .repair: return "修复下载记录"
         case .crawl: return "抓取漫画列表"
+        case .importComic: return "导入：\(job.payload["title"] ?? "本地漫画")"
+        case .export:
+            let fmt = job.payload["format"] ?? "cbz"
+            return "导出 \(fmt.uppercased())：\(job.payload["comicTitle"] ?? "漫画")"
         }
     }
     
