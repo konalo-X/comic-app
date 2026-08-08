@@ -358,7 +358,3 @@ struct FlowLayout: Layout {
         return rows
     }
 }
-
-extension Notification.Name {
-    static let switchTab = Notification.Name("switchTab")
-}

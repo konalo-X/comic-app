@@ -5,68 +5,69 @@ struct ComicApp: App {
     @StateObject private var appStore = AppStore.shared
     @StateObject private var jobQueue = JobQueue.shared
     @StateObject private var reader = ReaderStore.shared
-    
+
     @State private var selection: Tab = .bookshelf
-    @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
     @State private var showSettings = false
-    
-    enum Tab: Hashable {
-        case bookshelf, categories, search, discover, reading, chapterMgr, dataMgr, epub, reader, downloads, history, shortcuts, settings
+
+    enum Tab: String, Hashable, CaseIterable {
+        case bookshelf = "bookshelf"
+        case categories = "categories"
+        case search = "search"
+        case history = "history"
+        case reader = "reader"
+        case chapterMgr = "chapterMgr"
+        case downloads = "downloads"
+        case dataMgr = "dataMgr"
+        case epub = "epub"
+        case shortcuts = "shortcuts"
+        case settings = "settings"
+
+        var title: String {
+            switch self {
+            case .bookshelf: return "我的书架"
+            case .categories: return "分类与标签"
+            case .search: return "在线搜索"
+            case .history: return "阅读历史"
+            case .reader: return "阅读器"
+            case .chapterMgr: return "章节管理"
+            case .downloads: return "下载与任务"
+            case .dataMgr: return "数据管理"
+            case .epub: return "EPUB 生成"
+            case .shortcuts: return "快捷键"
+            case .settings: return "设置"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .bookshelf: return "books.vertical.fill"
+            case .categories: return "tag.fill"
+            case .search: return "magnifyingglass"
+            case .history: return "clock.arrow.circlepath"
+            case .reader: return "book"
+            case .chapterMgr: return "list.number"
+            case .downloads: return "square.and.arrow.down.on.square.fill"
+            case .dataMgr: return "externaldrive.fill.badge.timemachine"
+            case .epub: return "book.closed.fill"
+            case .shortcuts: return "keyboard.fill"
+            case .settings: return "gearshape.fill"
+            }
+        }
     }
-    
+
     var body: some Scene {
         WindowGroup("漫快 ComicApp") {
-            NavigationSplitView(columnVisibility: $columnVisibility) {
+            HSplitView {
                 sidebar
-                    .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 300)
-            } detail: {
-                Group {
-                    switch selection {
-                    case .bookshelf:
-                        BookshelfView().environmentObject(appStore)
-                    case .categories:
-                        CategoryMgrView().environmentObject(appStore)
-                    case .search, .discover:
-                        SearchView().environmentObject(appStore)
-                    case .chapterMgr:
-                        ChapterMgrView().environmentObject(appStore)
-                    case .dataMgr:
-                        DataManagerView().environmentObject(appStore)
-                    case .epub:
-                        EpubGenView().environmentObject(appStore)
-                    case .reading, .reader:
-                        ReaderView()
-                            .environmentObject(appStore)
-                            .environmentObject(reader)
-                    case .downloads:
-                        DownloadPageView()
-                            .environmentObject(appStore)
-                            .environmentObject(jobQueue)
-                    case .history:
-                        ReadingHistoryView().environmentObject(appStore)
-                    case .shortcuts:
-                        ShortcutsView()
-                    case .settings:
-                        SettingsView()
-                    }
-                }
-                .navigationSplitViewColumnWidth(min: 600, ideal: 1100)
+                    .frame(minWidth: 200, idealWidth: 240, maxWidth: 300)
+
+                contentView
+                    .frame(minWidth: 700, minHeight: 500)
             }
             .navigationTitle("漫快")
             .onReceive(NotificationCenter.default.publisher(for: .switchTab)) { n in
-                if let t = n.object as? String {
-                    switch t {
-                    case "bookshelf": selection = .bookshelf
-                    case "reader", "reading": selection = .reader
-                    case "downloads": selection = .downloads
-                    case "history": selection = .history
-                    case "chapterMgr": selection = .chapterMgr
-                    case "dataMgr": selection = .dataMgr
-                    case "epub": selection = .epub
-                    case "shortcuts": selection = .shortcuts
-                    case "settings": selection = .settings
-                    default: break
-                    }
+                if let t = n.object as? String, let tab = Tab(rawValue: t) {
+                    selection = tab
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .startReading)) { n in
@@ -90,7 +91,6 @@ struct ComicApp: App {
                     print("初始化失败: \(error)")
                 }
             }
-            .keyboardShortcut(.defaultAction)
         }
         .windowStyle(.titleBar)
         .windowResizability(.contentSize)
@@ -108,77 +108,101 @@ struct ComicApp: App {
                 Button("添加漫画URL...") {
                     NotificationCenter.default.post(name: NSNotification.Name("TriggerAddComic"), object: nil)
                 }
-                .keyboardShortcut("l")
+                .keyboardShortcut("n", modifiers: .command)
             }
         }
     }
-    
+
     private var sidebar: some View {
-        List(selection: $selection) {
-            Section("主界面") {
-                Label("我的书架", systemImage: "books.vertical.fill")
-                    .tag(Tab.bookshelf)
-                    .badge(appStore.totalComics > 0 ? "\(appStore.totalComics)" : nil)
-                Label("分类与标签", systemImage: "tag.fill")
-                    .tag(Tab.categories)
-                Label("在线搜索", systemImage: "magnifyingglass")
-                    .tag(Tab.search)
-                Label("阅读历史", systemImage: "clock.arrow.circlepath")
-                    .tag(Tab.history)
-                Label("阅读器", systemImage: "book")
-                    .tag(Tab.reader)
-            }
-            Section("内容管理") {
-                Label("章节管理", systemImage: "list.number")
-                    .tag(Tab.chapterMgr)
-                Label("下载与任务", systemImage: "square.and.arrow.down.on.square.fill")
-                    .tag(Tab.downloads)
-                    .badge(jobQueue.stats.running + jobQueue.stats.pending > 0
-                           ? "\(jobQueue.stats.running + jobQueue.stats.pending)"
-                           : nil)
-                Label("数据管理", systemImage: "externaldrive.fill.badge.timemachine")
-                    .tag(Tab.dataMgr)
-                Label("EPUB 生成", systemImage: "book.closed.fill")
-                    .tag(Tab.epub)
-            }
-            Section("漫画源") {
-                ForEach(SourceRegistry.shared.listInfos(), id: \.id) { info in
-                    HStack(spacing: 8) {
-                        Image(systemName: "globe")
-                            .foregroundStyle(Color.accentColor)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(info.name).font(.system(size: 13))
-                            Text(info.host).font(.caption2).foregroundStyle(.tertiary)
+        VStack(spacing: 0) {
+            List(selection: $selection) {
+                Section("主界面") {
+                    sidebarItem(.bookshelf, badge: appStore.totalComics > 0 ? "\(appStore.totalComics)" : nil)
+                    sidebarItem(.categories)
+                    sidebarItem(.search)
+                    sidebarItem(.history)
+                    sidebarItem(.reader)
+                }
+                Section("内容管理") {
+                    sidebarItem(.chapterMgr)
+                    sidebarItem(.downloads, badge: jobQueue.stats.running + jobQueue.stats.pending > 0
+                                ? "\(jobQueue.stats.running + jobQueue.stats.pending)"
+                                : nil)
+                    sidebarItem(.dataMgr)
+                    sidebarItem(.epub)
+                }
+                Section("漫画源") {
+                    ForEach(SourceRegistry.shared.listInfos(), id: \.id) { info in
+                        HStack(spacing: 8) {
+                            Image(systemName: "globe")
+                                .foregroundStyle(Color.accentColor)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(info.name).font(.system(size: 13))
+                                Text(info.host).font(.caption2).foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                            if info.default {
+                                Image(systemName: "star.fill")
+                                    .foregroundStyle(.yellow)
+                                    .font(.caption2)
+                            }
                         }
-                        Spacer()
-                        if info.default {
-                            Image(systemName: "star.fill")
-                                .foregroundStyle(.yellow)
-                                .font(.caption2)
-                        }
+                        .help(info.description ?? "")
                     }
-                    .help(info.description ?? "")
+                }
+                Section("系统") {
+                    sidebarItem(.shortcuts)
+                    sidebarItem(.settings)
                 }
             }
-            Section("系统") {
-                Label("快捷键", systemImage: "keyboard.fill")
-                    .tag(Tab.shortcuts)
-                Label("设置", systemImage: "gearshape.fill")
-                    .tag(Tab.settings)
-            }
-        }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom) {
-            VStack(spacing: 0) {
-                Divider()
-                statusFooter
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-            }
+            .listStyle(.sidebar)
+
+            Divider()
+            statusFooter
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             .background(.ultraThinMaterial)
         }
     }
-    
+
+    private func sidebarItem(_ tab: Tab, badge: String? = nil) -> some View {
+        Label(tab.title, systemImage: tab.icon)
+            .tag(tab)
+            .badge(badge)
+    }
+
+    @ViewBuilder
+    private var contentView: some View {
+        switch selection {
+        case .bookshelf:
+            BookshelfView().environmentObject(appStore)
+        case .categories:
+            CategoryMgrView().environmentObject(appStore)
+        case .search:
+            SearchView().environmentObject(appStore)
+        case .history:
+            ReadingHistoryView().environmentObject(appStore)
+        case .reader:
+            ReaderView()
+                .environmentObject(appStore)
+                .environmentObject(reader)
+        case .chapterMgr:
+            ChapterMgrView().environmentObject(appStore)
+        case .downloads:
+            DownloadPageView()
+                .environmentObject(appStore)
+                .environmentObject(jobQueue)
+        case .dataMgr:
+            DataManagerView().environmentObject(appStore)
+        case .epub:
+            EpubGenView().environmentObject(appStore)
+        case .shortcuts:
+            ShortcutsView()
+        case .settings:
+            SettingsView()
+        }
+    }
+
     private var statusFooter: some View {
         HStack(spacing: 8) {
             Circle()
@@ -203,4 +227,8 @@ struct ComicApp: App {
             }
         }
     }
+}
+
+extension Notification.Name {
+    static let switchTab = Notification.Name("switchTab")
 }

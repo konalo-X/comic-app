@@ -249,7 +249,7 @@ struct ReaderView: View {
     
     private var topOverlay: some View {
         HStack(spacing: 10) {
-            Button(action: { NotificationCenter.default.post(name: .switchTab, object: "bookshelf") }) {
+            Button(action: { NotificationCenter.default.post(name: Notification.Name.switchTab, object: "bookshelf") }) {
                 Image(systemName: "chevron.left").frame(width: 30, height: 30)
             }
             .buttonStyle(.plain)
