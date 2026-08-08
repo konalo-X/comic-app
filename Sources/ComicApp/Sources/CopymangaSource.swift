@@ -13,6 +13,20 @@ final class CopymangaSource: ComicSource {
     func search(query: String, page: Int) async throws -> [ComicSearchResult] {
         let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
         let url = "\(apiBase)/api/v3/search/comic?q=\(q)&offset=\((page-1)*21)&limit=21&platform=1&q_type="
+        return try await parseSearchAPI(url: url)
+    }
+    
+    func getPopular(page: Int) async throws -> [ComicSearchResult] {
+        let url = "\(apiBase)/api/v3/comics?ordering=-popular&offset=\((page-1)*21)&limit=21&platform=1"
+        return try await parseSearchAPI(url: url)
+    }
+    
+    func getLatest(page: Int) async throws -> [ComicSearchResult] {
+        let url = "\(apiBase)/api/v3/comics?ordering=-datetime_updated&offset=\((page-1)*21)&limit=21&platform=1"
+        return try await parseSearchAPI(url: url)
+    }
+    
+    private func parseSearchAPI(url: String) async throws -> [ComicSearchResult] {
         let data = try await NetworkManager.shared.getData(url, referer: baseURL, retries: 3, accept: "application/json, text/plain, */*")
         var results: [ComicSearchResult] = []
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

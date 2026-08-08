@@ -7,32 +7,70 @@ struct SearchView: View {
     @State private var isLoading = false
     @State private var errorMsg: String? = nil
     @State private var selectedSource: String? = nil
+    @State private var discoverMode: DiscoverMode = .search
+    @State private var discoverPage: Int = 1
+    
+    enum DiscoverMode: String, CaseIterable {
+        case search = "搜索"
+        case popular = "热门"
+        case latest = "最新"
+    }
     
     var body: some View {
         VStack(spacing: 0) {
             searchBar.padding(.horizontal, 18).padding(.vertical, 12)
             Divider()
             
+            if discoverMode != .search {
+                HStack(spacing: 12) {
+                    Picker("", selection: $discoverMode) {
+                        ForEach(DiscoverMode.allCases, id: \.self) { m in
+                            Text(m.rawValue).tag(m)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 240)
+                    
+                    Spacer()
+                    
+                    HStack(spacing: 4) {
+                        Button(action: prevPage) {
+                            Image(systemName: "chevron.left")
+                        }
+                        .disabled(discoverPage <= 1)
+                        Text("第 \(discoverPage) 页")
+                            .font(.caption).monospacedDigit()
+                        Button(action: nextPage) {
+                            Image(systemName: "chevron.right")
+                        }
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 8)
+                Divider()
+            }
+            
             ScrollView {
                 if isLoading {
-                    HStack { Spacer(); ProgressView("正在搜索...").controlSize(.large); Spacer() }
+                    HStack { Spacer(); ProgressView("正在加载...").controlSize(.large); Spacer() }
                         .padding(.top, 60)
                 } else if let e = errorMsg {
                     VStack(spacing: 10) {
                         Image(systemName: "exclamationmark.triangle")
                             .font(.system(size: 40)).foregroundStyle(.orange)
-                        Text("搜索失败").bold()
+                        Text("加载失败").bold()
                         Text(e).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal)
-                        Button("重试", action: doSearch).buttonStyle(.borderedProminent)
+                        Button("重试", action: loadData).buttonStyle(.borderedProminent)
                     }
                     .padding(.top, 60)
-                } else if results.isEmpty && keyword.isEmpty {
+                } else if results.isEmpty && discoverMode == .search && keyword.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "magnifyingglass.circle.fill")
                             .font(.system(size: 60)).foregroundStyle(.secondary.opacity(0.4))
                         Text("输入关键词开始搜索").font(.title2).foregroundStyle(.secondary)
                         Text("可搜索漫画名、作者、标签 · 多源聚合")
                             .font(.callout).foregroundStyle(.tertiary)
+                        discoverButtons.padding(.top, 18)
                         suggestions.padding(.top, 18)
                     }
                     .padding(.top, 80)
@@ -40,7 +78,8 @@ struct SearchView: View {
                     VStack(spacing: 10) {
                         Image(systemName: "tray.and.zoom.out")
                             .font(.system(size: 54)).foregroundStyle(.secondary.opacity(0.4))
-                        Text("没有找到「\(keyword)」相关结果").font(.title3).foregroundStyle(.secondary)
+                        Text(discoverMode == .search ? "没有找到「\(keyword)」相关结果" : "暂无内容")
+                            .font(.title3).foregroundStyle(.secondary)
                         Text("试试更换关键词或调整搜索源").foregroundStyle(.tertiary)
                     }
                     .padding(.top, 60)
@@ -63,6 +102,14 @@ struct SearchView: View {
                     }
                     .padding(.horizontal, 20).padding(.vertical, 18)
                 }
+            }
+        }
+        .onChange(of: discoverMode) { _, _ in
+            discoverPage = 1
+            if discoverMode != .search {
+                loadData()
+            } else {
+                results = []
             }
         }
     }
@@ -127,7 +174,34 @@ struct SearchView: View {
         .frame(maxWidth: 520)
     }
     
+    private var discoverButtons: some View {
+        HStack(spacing: 16) {
+            Button {
+                discoverMode = .popular
+            } label: {
+                Label("热门漫画", systemImage: "flame.fill")
+                    .font(.subheadline)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
+                    .foregroundStyle(.orange)
+            }
+            .buttonStyle(.plain)
+            
+            Button {
+                discoverMode = .latest
+            } label: {
+                Label("最新更新", systemImage: "clock.arrow.circlepath")
+                    .font(.subheadline)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.12)))
+                    .foregroundStyle(.blue)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+    
     private func doSearch() {
+        discoverMode = .search
         let kw = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !kw.isEmpty else { return }
         isLoading = true
@@ -146,6 +220,55 @@ struct SearchView: View {
                 }
             }
         }
+    }
+    
+    private func loadData() {
+        isLoading = true
+        errorMsg = nil
+        Task {
+            do {
+                let r: [ComicSearchResult]
+                if let sid = selectedSource, let source = SourceRegistry.shared.get(id: sid) {
+                    switch discoverMode {
+                    case .popular: r = try await source.getPopular(page: discoverPage)
+                    case .latest: r = try await source.getLatest(page: discoverPage)
+                    default: r = []
+                    }
+                } else {
+                    var all: [ComicSearchResult] = []
+                    for info in SourceRegistry.shared.listInfos() {
+                        guard let source = SourceRegistry.shared.get(id: info.id) else { continue }
+                        do {
+                            let list = try await (discoverMode == .popular
+                                ? source.getPopular(page: discoverPage)
+                                : source.getLatest(page: discoverPage))
+                            all.append(contentsOf: list)
+                        } catch { continue }
+                    }
+                    r = all
+                }
+                await MainActor.run {
+                    self.results = r
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMsg = error.localizedDescription
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+    
+    private func prevPage() {
+        guard discoverPage > 1 else { return }
+        discoverPage -= 1
+        loadData()
+    }
+    
+    private func nextPage() {
+        discoverPage += 1
+        loadData()
     }
 }
 

@@ -12,6 +12,20 @@ final class ManhuaguiSource: ComicSource {
     func search(query: String, page: Int) async throws -> [ComicSearchResult] {
         let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
         let url = page == 1 ? "\(baseURL)/s_\(q).html" : "\(baseURL)/s_\(q)_p\(page).html"
+        return try await parseListPage(url: url)
+    }
+    
+    func getPopular(page: Int) async throws -> [ComicSearchResult] {
+        let url = page == 1 ? "\(baseURL)/update/" : "\(baseURL)/update/?page=\(page)"
+        return try await parseListPage(url: url)
+    }
+    
+    func getLatest(page: Int) async throws -> [ComicSearchResult] {
+        let url = page == 1 ? "\(baseURL)/update/" : "\(baseURL)/update/?page=\(page)"
+        return try await parseListPage(url: url)
+    }
+    
+    private func parseListPage(url: String) async throws -> [ComicSearchResult] {
         let html = try await NetworkManager.shared.get(url, referer: baseURL)
         var results: [ComicSearchResult] = []
         #if canImport(SwiftSoup)

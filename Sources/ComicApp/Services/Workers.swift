@@ -337,7 +337,7 @@ final class CrawlService: @unchecked Sendable {
         var crawled = 0
         for item in list {
             try Task.checkCancellation()
-            await MainActor.run {
+            _ = await MainActor.run {
                 queue.add(
                     type: .sync,
                     payload: [

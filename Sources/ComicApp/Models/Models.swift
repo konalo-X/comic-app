@@ -246,7 +246,7 @@ struct ComicDetail {
     var chapters: [ChapterDetail] = []
 }
 
-struct ChapterDetail {
+struct ChapterDetail: Codable, Hashable {
     var name: String
     var url: String
 }
@@ -363,6 +363,8 @@ protocol ComicSource: AnyObject {
     var baseURL: String { get }
     
     func search(query: String, page: Int) async throws -> [ComicSearchResult]
+    func getPopular(page: Int) async throws -> [ComicSearchResult]
+    func getLatest(page: Int) async throws -> [ComicSearchResult]
     func getDetail(url: String) async throws -> ComicDetail
     func getPageList(chapterUrl: String, referer: String?) async throws -> ChapterPages
     func fetchImage(imageUrl: String, referer: String?) async throws -> Data

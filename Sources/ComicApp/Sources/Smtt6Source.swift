@@ -12,13 +12,27 @@ final class Smtt6Source: ComicSource {
     func search(query: String, page: Int) async throws -> [ComicSearchResult] {
         let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
         let url = "\(baseURL)/search?q=\(q)&page=\(page)"
+        return try await parseListPage(url: url)
+    }
+    
+    func getPopular(page: Int) async throws -> [ComicSearchResult] {
+        let url = "\(baseURL)/man-hua-lei-bie/all/ob/time/st/all/page/\(page)"
+        return try await parseListPage(url: url)
+    }
+    
+    func getLatest(page: Int) async throws -> [ComicSearchResult] {
+        let url = "\(baseURL)/man-hua-lei-bie/all/ob/time/st/all/page/\(page)"
+        return try await parseListPage(url: url)
+    }
+    
+    private func parseListPage(url: String) async throws -> [ComicSearchResult] {
         let html = try await NetworkManager.shared.get(url, referer: baseURL)
         var results: [ComicSearchResult] = []
         #if canImport(SwiftSoup)
         let doc = try SwiftSoup.parse(html)
-        let cards = try doc.select(".comic-item, .book-item, .search-item, div.card")
+        let cards = try doc.select(".comic-item, .book-item, .search-item, div.card, li.hl-list-item")
         for c in cards {
-            let title = try c.select("a.title, h3, .comic-title").first?.text().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let title = try c.select("a.title, h3, .comic-title, h2").first?.text().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !title.isEmpty else { continue }
             let href = try c.select("a").first?.attr("href") ?? ""
             let detailUrl = href.hasPrefix("http") ? href : baseURL + href
