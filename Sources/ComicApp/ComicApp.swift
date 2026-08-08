@@ -172,9 +172,11 @@ struct ComicApp: App {
     }
 
     private func sidebarItem(_ tab: Tab, badge: String? = nil) -> some View {
-        Label(tab.title, systemImage: tab.icon)
-            .tag(tab)
-            .badge(badge)
+        Button(action: { selection = tab }) {
+            Label(tab.title, systemImage: tab.icon)
+        }
+        .buttonStyle(.plain)
+        .tag(tab)
     }
 
     @ViewBuilder
