@@ -57,10 +57,10 @@ struct ComicApp: App {
 
     var body: some Scene {
         WindowGroup("漫快 ComicApp") {
-            HSplitView {
+            NavigationSplitView {
                 sidebar
                     .frame(minWidth: 200, idealWidth: 240, maxWidth: 300)
-
+            } detail: {
                 contentView
                     .frame(minWidth: 700, minHeight: 500)
             }
