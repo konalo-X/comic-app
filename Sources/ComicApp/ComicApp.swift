@@ -10,47 +10,47 @@ struct ComicApp: App {
     @State private var showSettings = false
 
     enum Tab: String, Hashable, CaseIterable {
+        case comicList = "comicList"
         case bookshelf = "bookshelf"
-        case categories = "categories"
+        case downloads = "downloads"
+        case settings = "settings"
         case search = "search"
         case history = "history"
         case reader = "reader"
         case chapterMgr = "chapterMgr"
-        case downloads = "downloads"
         case dataMgr = "dataMgr"
         case epub = "epub"
         case shortcuts = "shortcuts"
-        case settings = "settings"
 
         var title: String {
             switch self {
-            case .bookshelf: return "我的书架"
-            case .categories: return "分类与标签"
-            case .search: return "在线搜索"
-            case .history: return "阅读历史"
+            case .comicList: return "漫画列表"
+            case .bookshelf: return "漫画书架"
+            case .downloads: return "下载"
+            case .settings: return "设置"
+            case .search: return "搜索"
+            case .history: return "历史"
             case .reader: return "阅读器"
             case .chapterMgr: return "章节管理"
-            case .downloads: return "下载与任务"
             case .dataMgr: return "数据管理"
-            case .epub: return "EPUB 生成"
+            case .epub: return "EPUB"
             case .shortcuts: return "快捷键"
-            case .settings: return "设置"
             }
         }
 
         var icon: String {
             switch self {
+            case .comicList: return "globe"
             case .bookshelf: return "books.vertical.fill"
-            case .categories: return "tag.fill"
+            case .downloads: return "square.and.arrow.down.on.square.fill"
+            case .settings: return "gearshape.fill"
             case .search: return "magnifyingglass"
             case .history: return "clock.arrow.circlepath"
             case .reader: return "book"
             case .chapterMgr: return "list.number"
-            case .downloads: return "square.and.arrow.down.on.square.fill"
             case .dataMgr: return "externaldrive.fill.badge.timemachine"
             case .epub: return "book.closed.fill"
             case .shortcuts: return "keyboard.fill"
-            case .settings: return "gearshape.fill"
             }
         }
     }
@@ -69,6 +69,9 @@ struct ComicApp: App {
                 if let t = n.object as? String, let tab = Tab(rawValue: t) {
                     selection = tab
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerAddComic"))) { _ in
+                selection = .comicList
             }
             .onReceive(NotificationCenter.default.publisher(for: .startReading)) { n in
                 if let comic = n.object as? Comic {
@@ -116,21 +119,28 @@ struct ComicApp: App {
     private var sidebar: some View {
         VStack(spacing: 0) {
             List(selection: $selection) {
-                Section("主界面") {
-                    sidebarItem(.bookshelf, badge: appStore.totalComics > 0 ? "\(appStore.totalComics)" : nil)
-                    sidebarItem(.categories)
-                    sidebarItem(.search)
-                    sidebarItem(.history)
-                    sidebarItem(.reader)
-                }
-                Section("内容管理") {
-                    sidebarItem(.chapterMgr)
-                    sidebarItem(.downloads, badge: jobQueue.stats.running + jobQueue.stats.pending > 0
-                                ? "\(jobQueue.stats.running + jobQueue.stats.pending)"
-                                : nil)
-                    sidebarItem(.dataMgr)
-                    sidebarItem(.epub)
-                }
+                sidebarItem(.comicList)
+                sidebarItem(.bookshelf, badge: appStore.totalComics > 0 ? "\(appStore.totalComics)" : nil)
+                sidebarItem(.downloads, badge: jobQueue.stats.running + jobQueue.stats.pending > 0
+                            ? "\(jobQueue.stats.running + jobQueue.stats.pending)"
+                            : nil)
+                sidebarItem(.settings)
+                
+                Divider()
+                
+                sidebarItem(.search)
+                sidebarItem(.history)
+                sidebarItem(.reader)
+                
+                Divider()
+                
+                sidebarItem(.chapterMgr)
+                sidebarItem(.dataMgr)
+                sidebarItem(.epub)
+                sidebarItem(.shortcuts)
+                
+                Divider()
+                
                 Section("漫画源") {
                     ForEach(SourceRegistry.shared.listInfos(), id: \.id) { info in
                         HStack(spacing: 8) {
@@ -149,10 +159,6 @@ struct ComicApp: App {
                         }
                         .help(info.description ?? "")
                     }
-                }
-                Section("系统") {
-                    sidebarItem(.shortcuts)
-                    sidebarItem(.settings)
                 }
             }
             .listStyle(.sidebar)
@@ -174,10 +180,10 @@ struct ComicApp: App {
     @ViewBuilder
     private var contentView: some View {
         switch selection {
+        case .comicList:
+            ComicListView().environmentObject(appStore)
         case .bookshelf:
             BookshelfView().environmentObject(appStore)
-        case .categories:
-            CategoryMgrView().environmentObject(appStore)
         case .search:
             SearchView().environmentObject(appStore)
         case .history:
