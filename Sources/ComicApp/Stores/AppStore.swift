@@ -18,6 +18,8 @@ final class AppStore: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var errorMessage: String? = nil
     @Published var selectedComic: Comic? = nil
+    @Published var isBusyText: String = ""
+    private var busyStack: [String] = []
     
     private let repo = ComicRepository.shared
     private var cancellables = Set<AnyCancellable>()
@@ -146,5 +148,15 @@ final class AppStore: ObservableObject {
     
     var totalPages: Int {
         max(1, Int(ceil(Double(totalComics) / Double(pageSize))))
+    }
+    
+    func setBusy(_ text: String) {
+        busyStack.append(text)
+        isBusyText = busyStack.last ?? ""
+    }
+    
+    func clearBusy() {
+        _ = busyStack.popLast()
+        isBusyText = busyStack.last ?? ""
     }
 }

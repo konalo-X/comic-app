@@ -136,6 +136,11 @@ final class ReadingRepository: @unchecked Sendable {
         try recentHistory(limit: 100000)
     }
     
+    func clearAllHistory() throws {
+        let db = try DatabaseManager.shared.connection()
+        try db.run(progress.delete())
+    }
+    
     func chaptersReadCount() throws -> Int {
         let db = try DatabaseManager.shared.connection()
         return try db.scalar(progress.count)

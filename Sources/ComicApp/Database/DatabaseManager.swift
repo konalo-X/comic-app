@@ -5,6 +5,7 @@ final class DatabaseManager: @unchecked Sendable {
     static let shared = DatabaseManager()
     private let lock = NSLock()
     private var db: Connection?
+    private var dbPathCurrent: String = ""
     
     private init() {}
     
@@ -16,14 +17,107 @@ final class DatabaseManager: @unchecked Sendable {
         return (dir as NSString).appendingPathComponent("comics.sqlite3")
     }
     
+    private func getCandidatePaths() -> [String] {
+        let fm = FileManager.default
+        var paths: [String] = []
+        let appSupport = NSSearchPathForDirectoriesInDomains(.applicationSupportDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory()
+        let dir1 = (appSupport as NSString).appendingPathComponent("ComicApp")
+        try? fm.createDirectory(atPath: dir1, withIntermediateDirectories: true)
+        paths.append((dir1 as NSString).appendingPathComponent("comics.sqlite3"))
+        
+        let cache = NSSearchPathForDirectoriesInDomains(.cachesDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory()
+        let dir2 = (cache as NSString).appendingPathComponent("ComicApp")
+        try? fm.createDirectory(atPath: dir2, withIntermediateDirectories: true)
+        paths.append((dir2 as NSString).appendingPathComponent("comics.sqlite3"))
+        
+        let home = NSHomeDirectory()
+        let dir3 = (home as NSString).appendingPathComponent(".comic-app-data")
+        try? fm.createDirectory(atPath: dir3, withIntermediateDirectories: true)
+        paths.append((dir3 as NSString).appendingPathComponent("comics.sqlite3"))
+        return paths
+    }
+    
     func initialize() throws {
         lock.lock()
         defer { lock.unlock() }
-        let path = getDBPath()
-        self.db = try Connection(path)
-        db?.busyTimeout = 5.0
-        try createTables()
-        try migrate()
+        
+        var lastErr: Error?
+        let candidates = getCandidatePaths()
+        for (idx, path) in candidates.enumerated() {
+            do {
+                self.db = try Connection(path)
+                db?.busyTimeout = 10.0
+                
+                let test = Table("_write_test")
+                let idCol = Expression<Int>("id")
+                try db?.run(test.create(ifNotExists: true) { t in t.column(idCol, primaryKey: true) })
+                try db?.run(test.insert(or: .replace, idCol <- 1))
+                try db?.run(test.drop())
+                
+                try db?.run("PRAGMA journal_mode = WAL")
+                try db?.run("PRAGMA synchronous = NORMAL")
+                try db?.run("PRAGMA cache_size = -8000")
+                try db?.run("PRAGMA foreign_keys = ON")
+                try db?.run("PRAGMA busy_timeout = 10000")
+                try db?.run("PRAGMA wal_autocheckpoint = 1000")
+                
+                if idx > 0, let orig = candidates.first, orig != path {
+                    migrateFromPath(from: orig, to: path)
+                }
+                
+                self.dbPathCurrent = path
+                try createTables()
+                try migrate()
+                try? rebuildFTSIfEmpty()
+                NSLog("[DB] 数据库初始化成功: \(path)")
+                return
+            } catch {
+                lastErr = error
+                NSLog("[DB] 候选路径\(idx)失败 \(path): \(error.localizedDescription)")
+                self.db = nil
+                for suffix in ["", "-wal", "-shm"] {
+                    try? FileManager.default.removeItem(atPath: path + suffix)
+                }
+            }
+        }
+        if let lastErr { throw lastErr }
+        throw NSError(domain: "DB", code: -1, userInfo: [NSLocalizedDescriptionKey: "所有候选数据库路径均不可写"])
+    }
+    
+    private func migrateFromPath(from old: String, to new: String) {
+        guard let db else { return }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: old) else { return }
+        do {
+            let escaped = old.replacingOccurrences(of: "'", with: "''")
+            try db.run("ATTACH DATABASE '\(escaped)' AS old_db")
+            let tables = try db.prepare("SELECT name, sql FROM old_db.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+            var excluded = Set<String>()
+            for row in tables {
+                if let sql = row[1] as? String, sql.lowercased().contains("fts5") {
+                    excluded.insert(row[0] as? String ?? "")
+                }
+            }
+            for row in tables {
+                guard let name = row[0] as? String else { continue }
+                var isExcluded = false
+                for ex in excluded {
+                    if name == ex || name.starts(with: ex + "_") { isExcluded = true; break }
+                }
+                if isExcluded { continue }
+                let escName = name.replacingOccurrences(of: "\"", with: "\"\"")
+                try? db.run("CREATE TABLE IF NOT EXISTS \"\(escName)\" AS SELECT * FROM old_db.\"\(escName)\"")
+            }
+            let idxRows = try db.prepare("SELECT sql FROM old_db.sqlite_master WHERE type='index' AND sql IS NOT NULL")
+            for r in idxRows {
+                if let s = r[0] as? String { try? db.run(s) }
+            }
+            try db.run("DETACH DATABASE old_db")
+            NSLog("[DB] 已从\(old)迁移数据")
+        } catch {
+            NSLog("[DB] 迁移失败（使用新库）: \(error.localizedDescription)")
+            try? db.run("DETACH DATABASE old_db")
+        }
     }
     
     func connection() throws -> Connection {
@@ -88,10 +182,7 @@ final class DatabaseManager: @unchecked Sendable {
         try db.run(comics.createIndex(categoryCol, ifNotExists: true))
         try db.run(comics.createIndex(favoritedCol, ifNotExists: true))
         try db.run(comics.createIndex(updatedAtCol, ifNotExists: true))
-        
-        do { try db.run(comics.addColumn(localPathCol)) } catch {}
-        do { try db.run(comics.addColumn(chapterNamesEnrichedCol, defaultValue: 0)) } catch {}
-        do { try db.run(comics.addColumn(updateTimeCol, defaultValue: 0)) } catch {}
+        try? db.run("CREATE INDEX IF NOT EXISTS idx_comics_sourceUrl ON comics(sourceUrl)")
         
         let chapters = Table("chapters")
         let cIdCol = Expression<String>("id")
@@ -164,7 +255,7 @@ final class DatabaseManager: @unchecked Sendable {
             t.column(dIdCol, primaryKey: true)
             t.column(dComicIdCol)
             t.column(dComicTitleCol)
-            t.column(dChapterIdCol, unique: true)
+            t.column(dChapterIdCol)
             t.column(dChapterNameCol)
             t.column(dChapterIndexCol)
             t.column(dChapterUrlCol)
@@ -217,54 +308,165 @@ final class DatabaseManager: @unchecked Sendable {
             t.column(fUpdated)
         })
         
-        let jobs = Table("jobs")
+        let jobs = Table("job_queue")
         let jIdCol = Expression<String>("id")
         let jTypeCol = Expression<String>("type")
+        let jPriorityCol = Expression<Int>("priority")
         let jStatusCol = Expression<String>("status")
         let jPayloadCol = Expression<String>("payload")
-        let jProgressCol = Expression<Double>("progress")
-        let jMessageCol = Expression<String?>("message")
+        let jResultCol = Expression<String?>("result")
         let jErrorCol = Expression<String?>("error")
-        let jPriorityCol = Expression<Int>("priority")
-        let jRetryCol = Expression<Int>("retryCount")
-        let jMaxRetryCol = Expression<Int>("maxRetries")
-        let jCreatedAtCol = Expression<Int64>("createdAt")
-        let jUpdatedAtCol = Expression<Int64>("updatedAt")
+        let jProgressCol = Expression<String?>("progress")
+        let jProgressTotalCol = Expression<Int>("progress_total")
+        let jProgressCurrentCol = Expression<Int>("progress_current")
+        let jRetryCol = Expression<Int>("retry_count")
+        let jMaxRetryCol = Expression<Int>("max_retries")
+        let jTimeoutCol = Expression<Int?>("timeout")
+        let jDelayCol = Expression<Int>("delay")
+        let jRepeatCol = Expression<Int>("repeat_interval")
+        let jLastProgressAtCol = Expression<Int64?>("last_progress_at")
+        let jAutoRetryCountCol = Expression<Int>("auto_retry_count")
+        let jLastAgedAtCol = Expression<Int64?>("last_aged_at")
+        let jSourceCol = Expression<String>("source")
+        let jMutexKeyCol = Expression<String?>("mutex_key")
+        let jCreatedAtCol = Expression<Int64>("created_at")
+        let jUpdatedAtCol = Expression<Int64>("updated_at")
+        let jStartedAtCol = Expression<Int64?>("started_at")
+        let jCompletedAtCol = Expression<Int64?>("completed_at")
         
         try db.run(jobs.create(ifNotExists: true) { t in
             t.column(jIdCol, primaryKey: true)
             t.column(jTypeCol)
-            t.column(jStatusCol)
+            t.column(jPriorityCol, defaultValue: 2)
+            t.column(jStatusCol, defaultValue: "waiting")
             t.column(jPayloadCol)
-            t.column(jProgressCol, defaultValue: 0)
-            t.column(jMessageCol)
+            t.column(jResultCol)
             t.column(jErrorCol)
-            t.column(jPriorityCol, defaultValue: 5)
+            t.column(jProgressCol)
+            t.column(jProgressTotalCol, defaultValue: 0)
+            t.column(jProgressCurrentCol, defaultValue: 0)
             t.column(jRetryCol, defaultValue: 0)
             t.column(jMaxRetryCol, defaultValue: 3)
+            t.column(jTimeoutCol)
+            t.column(jDelayCol, defaultValue: 0)
+            t.column(jRepeatCol, defaultValue: 0)
+            t.column(jLastProgressAtCol)
+            t.column(jAutoRetryCountCol, defaultValue: 0)
+            t.column(jLastAgedAtCol)
+            t.column(jSourceCol, defaultValue: "auto")
+            t.column(jMutexKeyCol)
             t.column(jCreatedAtCol)
             t.column(jUpdatedAtCol)
+            t.column(jStartedAtCol)
+            t.column(jCompletedAtCol)
         })
-        try db.run(jobs.createIndex(jStatusCol, ifNotExists: true))
-        try db.run(jobs.createIndex(jPriorityCol, ifNotExists: true))
+        try? db.run("CREATE INDEX IF NOT EXISTS idx_job_queue_status ON job_queue(status)")
+        try? db.run("CREATE INDEX IF NOT EXISTS idx_job_queue_type ON job_queue(type)")
+        try? db.run("CREATE INDEX IF NOT EXISTS idx_job_queue_priority ON job_queue(priority, created_at)")
+        try? db.run("CREATE INDEX IF NOT EXISTS idx_job_queue_completed ON job_queue(completed_at)")
+        
+        let jf = Table("job_failure_stats")
+        let jfId = Expression<Int64>("id")
+        let jfReason = Expression<String>("reason")
+        let jfCount = Expression<Int>("count")
+        let jfLast = Expression<Int64>("last_update")
+        try db.run(jf.create(ifNotExists: true) { t in
+            t.column(jfId, primaryKey: true)
+            t.column(jfReason, unique: true)
+            t.column(jfCount, defaultValue: 0)
+            t.column(jfLast)
+        })
         
         try? createFTS()
     }
     
     private func createFTS() throws {
         guard let db else { return }
-        let fts = VirtualTable("comics_fts")
-        try db.run(fts.create(.FTS5(
-            FTS5Config()
-                .column(Expression<String>("id"))
-                .column(Expression<String>("title"))
-                .column(Expression<String>("author"))
-                .column(Expression<String>("tags"))
-                .column(Expression<String>("category"))
-                .column(Expression<String>("descText"))
-        ), ifNotExists: true))
+        let ftsExistsSQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='comics_fts'"
+        let hasFTS = try db.prepare(ftsExistsSQL).makeIterator().next() != nil
+        if !hasFTS {
+            try db.run("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS comics_fts USING fts5(
+                    title, author, tags, category, descText,
+                    content='comics',
+                    content_rowid='rowid',
+                    tokenize='unicode61 remove_diacritics 0'
+                )
+            """)
+        }
+        let triggerSQLs: [String] = [
+            """
+            CREATE TRIGGER IF NOT EXISTS comics_fts_insert AFTER INSERT ON comics BEGIN
+              INSERT INTO comics_fts(rowid, title, author, tags, category, descText)
+              VALUES (new.rowid, new.title, COALESCE(new.author,''), COALESCE(new.tags,''), COALESCE(new.category,''), COALESCE(new.descText,''));
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS comics_fts_delete AFTER DELETE ON comics BEGIN
+              INSERT INTO comics_fts(comics_fts, rowid, title, author, tags, category, descText)
+              VALUES('delete', old.rowid, old.title, COALESCE(old.author,''), COALESCE(old.tags,''), COALESCE(old.category,''), COALESCE(old.descText,''));
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS comics_fts_update AFTER UPDATE ON comics BEGIN
+              INSERT INTO comics_fts(comics_fts, rowid, title, author, tags, category, descText)
+              VALUES('delete', old.rowid, old.title, COALESCE(old.author,''), COALESCE(old.tags,''), COALESCE(old.category,''), COALESCE(old.descText,''));
+              INSERT INTO comics_fts(rowid, title, author, tags, category, descText)
+              VALUES (new.rowid, new.title, COALESCE(new.author,''), COALESCE(new.tags,''), COALESCE(new.category,''), COALESCE(new.descText,''));
+            END
+            """
+        ]
+        for sql in triggerSQLs { try db.run(sql) }
+    }
+    
+    var dbPath: String {
+        return dbPathCurrent
+    }
+    
+    func rebuildFTS() throws {
+        guard let db else { return }
+        try db.run("DELETE FROM comics_fts")
+        try db.run("INSERT INTO comics_fts(rowid, title, author, tags, category, descText) SELECT rowid, title, COALESCE(author,''), COALESCE(tags,''), COALESCE(category,''), COALESCE(descText,'') FROM comics")
+        NSLog("[DB] FTS5 强制重建完成")
+    }
+    
+    func vacuum() throws {
+        guard let db else { return }
+        try db.run("VACUUM")
+        NSLog("[DB] VACUUM 完成")
+    }
+    
+    private func rebuildFTSIfEmpty() throws {
+        guard let db else { return }
+        let ftsStmt = try db.prepare("SELECT COUNT(*) FROM comics_fts")
+        var ftsCount: Int64 = 0
+        for row in ftsStmt { if let c = row[0] as? Int64 { ftsCount = c } }
+        guard ftsCount == 0 else { return }
+        let comicStmt = try db.prepare("SELECT COUNT(*) FROM comics")
+        var comicCount: Int64 = 0
+        for row in comicStmt { if let c = row[0] as? Int64 { comicCount = c } }
+        guard comicCount > 0 else { return }
+        try db.run("INSERT INTO comics_fts(rowid, title, author, tags, category, descText) SELECT rowid, title, COALESCE(author,''), COALESCE(tags,''), COALESCE(category,''), COALESCE(descText,'') FROM comics")
+        NSLog("[DB] FTS5 重建完毕 \(comicCount) 条")
     }
     
     private func migrate() throws {
+        guard let db else { return }
+        func addColIfMissing(_ table: String, _ name: String, _ def: String) {
+            do {
+                let rows = try db.prepare("PRAGMA table_info('\(table)')")
+                let names = Set(rows.compactMap { $0[1] as? String })
+                if !names.contains(name) {
+                    try db.run("ALTER TABLE \(table) ADD COLUMN \(name) \(def)")
+                    NSLog("[DB Migrate] 新增列 \(table).\(name)")
+                }
+            } catch {}
+        }
+        addColIfMissing("comics", "localPath", "TEXT")
+        addColIfMissing("comics", "chapterNamesEnriched", "INTEGER DEFAULT 0")
+        addColIfMissing("comics", "updateTime", "INTEGER DEFAULT 0")
+        addColIfMissing("download_records", "status", "TEXT DEFAULT 'completed'")
+        addColIfMissing("download_records", "completed", "INTEGER DEFAULT 0")
+        addColIfMissing("download_records", "error", "TEXT")
     }
 }

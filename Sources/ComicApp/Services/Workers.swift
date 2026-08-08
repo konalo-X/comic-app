@@ -5,6 +5,57 @@ final class DownloadService: @unchecked Sendable {
     static let shared = DownloadService()
     private init() {}
     
+    static func downloadsDir() -> URL {
+        let paths = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+        let base = paths.first?.appendingPathComponent("ComicApp", isDirectory: true) ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Downloads/ComicApp")
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
+    
+    static func sanitizeName(_ s: String) -> String {
+        var r = s
+        for ch in ["/", ":", "?", "\"", "<", ">", "|", "\\", "*"] {
+            r = r.replacingOccurrences(of: ch, with: "_")
+        }
+        return r.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    static func localPath(for comic: Comic, chapterIndex: Int) -> String {
+        let base = downloadsDir()
+        let safeTitle = sanitizeName(comic.title.count > 0 ? comic.title : comic.id)
+        let comicDir = base.appendingPathComponent(safeTitle, isDirectory: true)
+        try? FileManager.default.createDirectory(at: comicDir, withIntermediateDirectories: true)
+        let chName = comic.chapters.indices.contains(chapterIndex) ? comic.chapters[chapterIndex].name : "第\(chapterIndex + 1)话"
+        let safeCh = sanitizeName(String(format: "%03d_%@", chapterIndex + 1, chName))
+        return comicDir.appendingPathComponent("\(safeCh).cbz").path
+    }
+    
+    @MainActor
+    static func queueDownloads(comic: Comic, chapterIndices: [Int], priority: Int = 2, forceRedownload: Bool = false) {
+        let q = JobQueue.shared
+        for idx in chapterIndices {
+            guard idx >= 0 && idx < comic.chapters.count else { continue }
+            let ch = comic.chapters[idx]
+            let path = localPath(for: comic, chapterIndex: idx)
+            if !forceRedownload && FileManager.default.fileExists(atPath: path) { continue }
+            var payload: [String: String] = [
+                "comicId": comic.id,
+                "comicTitle": comic.title,
+                "chapterIndex": "\(idx)",
+                "chapterName": ch.name,
+                "chapterUrl": ch.url,
+                "chapterId": ch.id,
+                "sourceUrl": comic.sourceUrl ?? "",
+                "source": comic.sourceId ?? "",
+                "force": forceRedownload ? "1" : "0"
+            ]
+            if let c = comic.cover, let cover = c.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                payload["cover"] = cover
+            }
+            q.add(type: .download, payload: payload, priority: priority, mutexKey: "dl_\(comic.id)_\(idx)")
+        }
+    }
+    
     nonisolated func downloadChapter(job: Job, queue: JobQueue) async throws {
         guard let comicId = job.payload["comicId"],
               let comicTitle = job.payload["comicTitle"],

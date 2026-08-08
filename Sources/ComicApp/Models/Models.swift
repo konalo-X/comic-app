@@ -202,13 +202,23 @@ struct Job: Identifiable, Codable, Hashable {
     var status: JobStatus = .pending
     var payload: [String: String] = [:]
     var progress: Double = 0
+    var progressCurrent: Int = 0
+    var progressTotal: Int = 0
     var message: String? = nil
     var error: String? = nil
-    var priority: Int = 5
+    var priority: Int = 2
     var retryCount: Int = 0
     var maxRetries: Int = 3
+    var timeoutMs: Int? = nil
+    var delayMs: Int = 0
+    var repeatIntervalMs: Int = 0
+    var source: String = "auto"
+    var mutexKey: String? = nil
     var createdAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     var updatedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    var startedAt: Int64 = 0
+    var completedAt: Int64 = 0
+    var lastAgedAt: Int64 = 0
 }
 
 struct ComicSearchResult: Identifiable, Codable, Hashable {

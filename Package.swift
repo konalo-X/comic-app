@@ -25,7 +25,11 @@ let package = Package(
                 .product(name: "Alamofire", package: "Alamofire"),
             ],
             path: "Sources/ComicApp",
-            resources: []
+            resources: [.process("../../Resources")],
+            linkerSettings: [
+                .linkedFramework("SystemConfiguration"),
+                .linkedFramework("CFNetwork")
+            ]
         ),
         .testTarget(
             name: "ComicAppTests",
