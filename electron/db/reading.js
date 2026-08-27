@@ -65,10 +65,10 @@ async function getDownloadSize() {
   const paths = rows.map(v => v.path).filter(Boolean)
   let total = 0
   for (const p of paths) {
-    if (!fs.existsSync(p)) continue
-    const stat = fs.statSync(p)
+    let stat
+    try { stat = await fs.promises.stat(p) } catch (_) { continue }
     if (stat.isDirectory()) {
-      total += core.getDirectorySize(p)
+      total += await core.getDirectorySize(p)
     } else if (stat.isFile()) {
       total += stat.size
     }

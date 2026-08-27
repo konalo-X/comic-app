@@ -310,7 +310,19 @@ function gradient(title) {
 }
 
 function onImgError(e) {
-  e.target.style.display = 'none'
+  // Bug #41 修复: 封面加载失败时回退到在线封面 (不再只是隐藏)
+  const img = e.target
+  if (img && !img.dataset.fallbackTried) {
+    img.dataset.fallbackTried = '1'
+    const comic = selectedComic.value
+    if (comic?.cover && comic.cover.startsWith('http')) {
+      // 当前可能是本地封面, 回退到在线封面
+      img.src = window.utils ? window.utils.toProxyUrl(comic.cover, comic.cover) : comic.cover
+      return
+    }
+  }
+  // 最终回退: 隐藏图片
+  if (img) img.style.display = 'none'
 }
 
 function isCompleted(status) {
@@ -385,7 +397,12 @@ async function toggleFav() {
 async function checkQueueStatus() {
   if (!selectedComic.value || !window.jobApi) return
   try {
-    const jobs = await window.jobApi.list('active', 100)
+    // 同时检查 active 和 waiting 状态，避免漏掉排队中的任务
+    const [activeJobs, waitingJobs] = await Promise.all([
+      window.jobApi.list('active', 100),
+      window.jobApi.list('waiting', 100)
+    ])
+    const jobs = [...(activeJobs || []), ...(waitingJobs || [])]
     const inQueue = jobs.some(j =>
       j.type === 'downloadComic' &&
       (j.payload?.sourceUrl === selectedComic.value.sourceUrl ||
@@ -517,9 +534,8 @@ async function cacheComic() {
     alert('添加下载失败: ' + (e.message || '未知错误'))
   } finally {
     caching.value = false
-    if (!wasSkipped) {
-      isInQueue.value = true
-    }
+    // 无论是否 skipped，都刷新真实队列状态
+    try { checkQueueStatus() } catch (e) { isInQueue.value = !wasSkipped }
   }
 }
 
@@ -702,6 +718,7 @@ watch(comics, () => {
   }
 }, { deep: true })
 
+let _autoFetchToken = 0
 async function autoFetchChapters() {
   const comic = selectedComic.value
   if (!comic || !comic.sourceUrl) return
@@ -710,9 +727,12 @@ async function autoFetchChapters() {
   if (autoFetchingChapters.value) return
   if (!window.detailApi) return
 
+  // 用 token 防竞态：快速切换漫画时，过期 token 的回调直接 return
+  const token = ++_autoFetchToken
   autoFetchingChapters.value = true
   try {
     const result = await window.detailApi.enrichComic(comic.sourceUrl)
+    if (token !== _autoFetchToken) return // 已被新请求取代
     if (result.success && result.comic) {
       const idx = comics.value.findIndex(c => (c._id || c.sourceUrl) === selectedId.value)
       if (idx >= 0) {
@@ -720,9 +740,12 @@ async function autoFetchChapters() {
       }
     }
   } catch (e) {
+    if (token !== _autoFetchToken) return
     console.warn('[自动获取章节] 失败:', e.message)
   } finally {
-    autoFetchingChapters.value = false
+    if (token === _autoFetchToken) {
+      autoFetchingChapters.value = false
+    }
   }
 }
 
@@ -739,7 +762,10 @@ async function loadDownloadedChapterIndices() {
   const comic = selectedComic.value
   if (!comic) { downloadedChapterIndices.value = new Set(); return }
   try {
+    // Bug #40: 传 comicId 让后端通过 comics.id 精确查 download_records,
+    // 避免同名多本漫画标题兜底查到另一本目录, 导致绿块错位
     const indices = await window.offlineApi?.getLocalChapterIndices?.({
+      comicId: comic.id || comic._id || '',
       comicTitle: comic.title,
       sourceUrl: comic.sourceUrl || ''
     }) || []

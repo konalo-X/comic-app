@@ -11,11 +11,11 @@ const {
   resolveComicDir, getPrimaryDownloadRoot,
   findChapterDir, getValidChapterImages, getValidChapterImagesCached, listChapterImages,
   downloadChapterImages, downloadBuf,
-  getGlobalDownloadConcurrency
+  getGlobalDownloadConcurrency, existsAsync
 } = require('../downloadPaths')
 
 async function downloadCoverIfNeeded(comicDir, coverUrl, referer) {
-  if (!coverUrl || fs.existsSync(path.join(comicDir, 'cover.webp'))) return
+  if (!coverUrl || (await existsAsync(path.join(comicDir, 'cover.webp')))) return
   try {
     const { buffer: buf } = await downloadBuf(coverUrl, referer)
     await sharpPool.webpConvert(buf, path.join(comicDir, 'cover.webp'), { quality: 85 })
@@ -31,10 +31,10 @@ async function checkChapterAlreadyDownloaded(comicDir, chapterIndex, chapterName
   try { expected = await db.getChapterImageCountBySourceUrl(sourceUrl, chapterIndex) } catch (_) {}
   const countOk = (validCount) => expected > 0 ? validCount >= expected : validCount > 0
 
-  const chDirOnDisk = findChapterDir(comicDir, chapterIndex, chapterName, usedDirs)
+  const chDirOnDisk = await findChapterDir(comicDir, chapterIndex, chapterName, usedDirs)
   if (chDirOnDisk) {
     const { validFiles } = await getValidChapterImagesCached(chDirOnDisk)
-    const allFiles = listChapterImages(chDirOnDisk)
+    const allFiles = await listChapterImages(chDirOnDisk)
     const corruptCount = allFiles.length - validFiles.length
     if (validFiles.length > 0 && corruptCount === 0 && countOk(validFiles.length)) {
       if (usedDirs) usedDirs.add(chDirOnDisk)
@@ -54,7 +54,7 @@ async function checkChapterAlreadyDownloaded(comicDir, chapterIndex, chapterName
   const already = existingRecords.find(r =>
     (r.comicId === sourceUrl || r.comicId === comicTitle) && r.chapterIndex === chapterIndex
   )
-  if (already && already.path && fs.existsSync(already.path)) {
+  if (already && already.path && (await existsAsync(already.path))) {
     const { validFiles } = await getValidChapterImagesCached(already.path)
     if (validFiles.length > 0 && countOk(validFiles.length)) {
       return { skipped: true, validFiles: validFiles.length }
@@ -66,12 +66,17 @@ async function checkChapterAlreadyDownloaded(comicDir, chapterIndex, chapterName
 
 async function downloadChapterCore(job, comicDir, chapter, chapterIndex, comicTitle, sourceUrl, referer, onProgress) {
   const src = sources.default
+  // 阶段进度: 进入抓取前先通知前端“正在连接源站”，避免 total=0 时进度条一直显示 0% 让用户误以为卡死
+  try { onProgress && onProgress({ phase: 'fetching', current: 0, total: 0, statusText: '连接源站中…', downloaded: 0 }) } catch (_) {}
   let pageList
   try {
     pageList = await src.getPageList(chapter.url, referer || sourceUrl)
   } catch (e) {
     const cause = (e && e.message) || String(e) || '获取页面列表失败'
-    throw new Error(`获取章节页面列表失败 (${comicTitle} › 第${chapterIndex + 1}章 ${chapter.name || ''}): ${cause}`)
+    // 源站不可达时给出明确提示，便于前端/用户判断
+    const isConnErr = /timeout|ENOTFOUND|ECONN|getaddrinfo|network|aborted|socket/i.test(cause)
+    const hint = isConnErr ? '（源站不可达或网络异常）' : ''
+    throw new Error(`获取章节页面列表失败 (${comicTitle} › 第${chapterIndex + 1}章 ${chapter.name || ''}): ${cause}${hint}`)
   }
   const images = Array.isArray(pageList) ? pageList : pageList.images
   const chapterName = Array.isArray(pageList) ? '' : (pageList.chapterName || '')
@@ -82,7 +87,7 @@ async function downloadChapterCore(job, comicDir, chapter, chapterIndex, comicTi
   const folder = sanitize(`${chapterIndex + 1}-${chapterName}`)
   const chDir = path.join(comicDir, folder)
   try {
-    if (!fs.existsSync(chDir)) fs.mkdirSync(chDir, { recursive: true })
+    if (!(await existsAsync(chDir))) await fs.promises.mkdir(chDir, { recursive: true })
   } catch (e) {
     throw new Error(`创建章节目录失败 (${chDir}): ${e.message || e}`)
   }
@@ -120,18 +125,18 @@ async function saveChapterResult(chapterIndex, chapterName, comicTitle, sourceUr
       chapterName, imagesCount: diskValid, path: chDir,
       status: isComplete ? 'success' : 'incomplete'
     })
-  } catch (_) {}
+  } catch (e) { console.warn(`[下载] saveDownloadRecord 失败: ${e.message}`) }
   if (sourceUrl) {
     // 图数列(image_count)应存源站应有数(total), 不能用实际落盘数覆盖,
     // 否则部分失败会把权威图数污染, 永久掩盖缺图。
     if (expected > 0) {
-      try { await db.updateChapterImageCountBySourceUrl(sourceUrl, chapterIndex, expected) } catch (_) {}
+      try { await db.updateChapterImageCountBySourceUrl(sourceUrl, chapterIndex, expected) } catch (e) { console.warn(`[下载] updateChapterImageCount 失败: ${e.message}`) }
     }
-    try { await db.updateComic(sourceUrl, { local_path: path.dirname(chDir) }) } catch (_) {}
+    try { await db.updateComic(sourceUrl, { local_path: path.dirname(chDir) }) } catch (e) { console.warn(`[下载] updateComic local_path 失败: ${e.message}`) }
     // 规则：下载到本地的漫画默认为已收藏，纳入自动追更池
-    try { await db.setFavorite(sourceUrl, 1) } catch (_) {}
+    try { await db.setFavorite(sourceUrl, 1) } catch (e) { console.warn(`[下载] setFavorite 失败: ${e.message}`) }
     if (isComplete) {
-      try { await db.resetUpdateDelta(sourceUrl) } catch (_) {}
+      try { await db.resetUpdateDelta(sourceUrl) } catch (e) { console.warn(`[下载] resetUpdateDelta 失败: ${e.message}`) }
     }
   }
   // 下载完成且完整的章: getValidChapterImagesCached 已对每张真 sharp 校验并写缓存,
@@ -145,7 +150,7 @@ async function jobHandlerDownloadChapter(job, onProgress) {
     throw new Error(`漫画名无效 (${comicTitle || '空'})，请先补全漫画详情后再下载`)
   }
 
-  const comicDir = resolveComicDir(comicTitle, sourceUrl, payloadComicDir)
+  const comicDir = await resolveComicDir(comicTitle, sourceUrl, payloadComicDir)
   await downloadCoverIfNeeded(comicDir, coverUrl, sourceUrl || referer)
 
   let actualChapterName = chapter.name
@@ -224,7 +229,7 @@ async function jobHandlerDownloadComic(job, onProgress) {
 
   let comicDir
   try {
-    comicDir = resolveComicDir(comicTitle, sourceUrl, payloadComicDir)
+    comicDir = await resolveComicDir(comicTitle, sourceUrl, payloadComicDir)
   } catch (e) {
     throw new Error(`解析漫画目录失败 (${comicTitle}): ${e.message || e}`)
   }
@@ -260,7 +265,8 @@ async function jobHandlerDownloadComic(job, onProgress) {
         (prog) => {
           onProgress({
             chapter: completed, totalChapters, chapterName,
-            current: prog.current, total: prog.total
+            current: prog.current, total: prog.total,
+            speed: prog.speed ?? 0
           })
         }
       )

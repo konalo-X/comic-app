@@ -27,7 +27,20 @@ function register(deps) {
 
         function cleanup() {
           _pendingHandlers.delete(prefix)
+          // Bug #22 修复: 清理安全超时定时器
+          if (safetyTimer) clearTimeout(safetyTimer)
         }
+
+        // Bug #22 修复: 安全超时, 防止 job 永久 running 时 IPC 永久挂起 + 监听器泄漏
+        let safetyTimer = setTimeout(() => {
+          if (!resolved) {
+            resolved = true
+            unsub(); unsubDone(); unsubFailed()
+            cleanup()
+            console.warn(`[${prefix}] 安全超时(30min), job 可能仍在运行但 IPC 已释放`)
+            resolve({ jobId, result: null, timeout: true })
+          }
+        }, 30 * 60 * 1000)
 
         const unsub = jq.on('progress', (data) => {
           if (jobId && data.jobId === jobId) {
@@ -40,11 +53,11 @@ function register(deps) {
           if (!resolved && jobId && data.jobId === jobId) {
             resolved = true
             unsub(); unsubDone(); unsubFailed()
+            cleanup()
             BrowserWindow.getAllWindows().forEach(w => {
               if (!w.isDestroyed()) w.webContents.send(`${prefix}:done`, data.result)
             })
-            cleanup()
-            resolve(data.result)
+            resolve({ jobId, result: data.result })
           }
         })
         const unsubFailed = jq.on('failed', (data) => {
@@ -55,7 +68,15 @@ function register(deps) {
             reject(new Error(data.error || '作业失败'))
           }
         })
-        jobId = addJobFn()
+        try {
+          jobId = addJobFn()
+        } catch (e) {
+          resolved = true
+          unsub(); unsubDone(); unsubFailed()
+          cleanup()
+          reject(e)
+          return
+        }
         if (!jobId) {
           resolved = true
           unsub(); unsubDone(); unsubFailed()
@@ -182,14 +203,27 @@ function register(deps) {
 
       function cleanup() {
         _crawlAllPromise = null
+        // Bug #22 修复: 清理安全超时定时器
+        if (safetyTimer) clearTimeout(safetyTimer)
       }
+
+      // Bug #22 修复: 安全超时(35min, 比 job 自身的 30min timeout 多 5min), 防止 IPC 永久挂起
+      let safetyTimer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true
+          unsubDone(); unsubFailed()
+          cleanup()
+          console.warn('[crawl:all] 安全超时(35min), job 可能仍在运行但 IPC 已释放')
+          resolve({ jobId, result: null, timeout: true })
+        }
+      }, 35 * 60 * 1000)
 
       const unsubDone = jq.on('completed', (data) => {
         if (!resolved && jobId && data.jobId === jobId && data.type === 'crawlAll') {
           resolved = true
           unsubDone(); unsubFailed()
           cleanup()
-          resolve(data.result)
+          resolve({ jobId, result: data.result })
         }
       })
       const unsubFailed = jq.on('failed', (data) => {
@@ -200,7 +234,7 @@ function register(deps) {
           reject(new Error(data.error || '作业失败'))
         }
       })
-      jobId = jq.add('crawlAll', { startUrl }, { priority: 0, timeout: 30 * 60 * 1000, maxRetries: 1 })
+      jobId = jq.add('crawlAll', { startUrl }, { priority: 1, timeout: 30 * 60 * 1000, maxRetries: 1, source: 'manual' })
       if (!jobId) {
         resolved = true
         unsubDone(); unsubFailed()
@@ -215,7 +249,7 @@ function register(deps) {
   })
   ipcMain.handle('crawl:enrich', createJobHandler('enrich', () => addSyncJob(0)))
   ipcMain.handle('crawl:checkUpdates', createJobHandler('update', () => addSyncJob(0)))
-  ipcMain.handle('crawl:enrichChapters', createJobHandler('enrichChapters', () => jq.add('enrichChapters', {}, { priority: 3 })))
+  ipcMain.handle('crawl:enrichChapters', createJobHandler('enrichChapters', () => jq.add('enrichChapters', {}, { priority: 2, source: 'manual' })))
 
   // --- 漫画详情页补全 ---
   ipcMain.handle('detail:enrichComic', async (_, sourceUrl) => {
@@ -282,7 +316,7 @@ function register(deps) {
       if (existing) {
         return { success: true, jobId: existing.id, status: 'already_running', message: '已有补全任务在执行中' }
       }
-      const jobId = jq.add('autoEnrich', {}, { priority: 2, maxRetries: 2, timeout: 10 * 60 * 1000 })
+      const jobId = jq.add('autoEnrich', {}, { priority: 1, maxRetries: 2, timeout: 10 * 60 * 1000, source: 'manual' })
       return { success: true, jobId, status: jobId ? 'queued' : 'skipped' }
     } catch (e) {
       console.error('[detail:autoEnrichAll] error:', e.message)

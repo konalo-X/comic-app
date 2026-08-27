@@ -211,10 +211,14 @@ function getAppliedVersions(db) {
 
 function applyMigration(db, migration) {
   console.log(`[DB Migration] 应用 v${migration.version}: ${migration.name}`)
-  migration.up(db)
-  db.prepare('INSERT INTO _migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
-    migration.version, migration.name, Date.now()
-  )
+  // Bug #25 修复: migration.up + 版本记录包进事务, 中途失败可回滚, 避免半迁移状态
+  const tx = db.transaction(() => {
+    migration.up(db)
+    db.prepare('INSERT INTO _migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      migration.version, migration.name, Date.now()
+    )
+  })
+  tx()
   console.log(`[DB Migration] ✓ v${migration.version} 完成`)
 }
 

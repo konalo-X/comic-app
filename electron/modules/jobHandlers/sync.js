@@ -28,7 +28,7 @@ async function jobHandlerSync(job, onProgress) {
   async function cancelSleep(ms) {
     const start = Date.now()
     while (Date.now() - start < ms) {
-      if (job.cancelled()) throw new Error('cancelled')
+      if (job.cancelled()) return // 取消时静默返回，调用方通过 job.cancelled() 判断
       await sleep(Math.min(500, ms - (Date.now() - start)))
     }
   }
@@ -85,13 +85,17 @@ async function jobHandlerSync(job, onProgress) {
       } catch (e) {
         lastError = e
         const msg = e.message || ''
+        // Bug #27 修复: 补充 429/502/503/504/522 等可重试的临时错误
         const isRetryable = msg.includes('timeout') || msg.includes('ECONNRESET')
           || msg.includes('ERR_CONNECTION_RESET') || msg.includes('ENOTFOUND')
           || msg.includes('EAI_AGAIN') || msg.includes('body timeout')
+          || msg.includes('429') || msg.includes('502') || msg.includes('503')
+          || msg.includes('504') || msg.includes('522')
         if (isRetryable && attempt < MAX_RETRIES - 1) {
           const backoffMs = 3000 * (attempt + 1) + Math.random() * 2000
           console.log(`[Sync] ${comic.title} 第 ${attempt + 1} 次尝试失败，${(backoffMs / 1000).toFixed(1)}s 后重试...`)
           await cancelSleep(backoffMs)
+          if (job.cancelled()) break
         } else {
           break
         }
@@ -110,6 +114,7 @@ async function jobHandlerSync(job, onProgress) {
     await Promise.allSettled(batch.map((comic, j) => syncOneWrapper(comic, i + j)))
     if (i + SYNC_CONCURRENCY < comics.length) {
       await cancelSleep(SYNC_DELAY_MS + Math.random() * 1000)
+      if (job.cancelled()) return { enriched, updated, failed, skipped, newChapters, msg: '已取消' }
     }
   }
   return { enriched, updated, failed, skipped, newChapters, total: comics.length }
@@ -119,10 +124,10 @@ async function _triggerAutoDownload(comic, detail, job) {
   const jobQueue = getJobQueue()
   if (!jobQueue?.db) return
 
-  let comicDir = findComicDir(detail.title || comic.title, comic.sourceUrl)
+  let comicDir = await findComicDir(detail.title || comic.title, comic.sourceUrl)
   if (!comicDir) {
     const preferred = path.join(getPrimaryDownloadRoot(), sanitize((detail.title || comic.title || '').trim()))
-    comicDir = resolveUniqueComicDir(preferred, comic.sourceUrl)
+    comicDir = await resolveUniqueComicDir(preferred, comic.sourceUrl)
   }
   const downloadRoot = getPrimaryDownloadRoot()
   const resolvedComicDir = path.resolve(comicDir)
@@ -152,18 +157,22 @@ async function _triggerAutoDownload(comic, detail, job) {
       seenThisRun.add(chUrl)
     }
     if (comicDir) {
-      const chDir = findChapterDir(comicDir, ch.name, idx)
-      const existingImgs = chDir ? getValidChapterImagesCached(chDir) : []
+      // Bug 8.1 修复: findChapterDir 签名为 (comicDir, chapterIndex, chapterName, usedDirs)
+      const chDir = await findChapterDir(comicDir, idx, ch.name)
+      // Bug 8.2 修复: getValidChapterImagesCached 是 async, 必须 await; 返回 { validFiles, allVerified }
+      const existingCount = chDir ? (await getValidChapterImagesCached(chDir)).validFiles.length : 0
       const expectedCount = expectedByIndex.get(idx)
-      if (expectedCount && existingImgs.length >= expectedCount) continue
-      if (!expectedCount && existingImgs.length > 0) continue
+      if (expectedCount && existingCount >= expectedCount) continue
+      if (!expectedCount && existingCount > 0) continue
     }
+    // Bug 8.4 修复: downloadChapter jobHandler 期望 payload 含 chapter 对象 { name, url, index }
     payloads.push({
-      comicId: comic._id,
       comicTitle: detail.title || comic.title,
-      chapterIndex: idx,
-      chapterName: ch.name,
-      chapterUrl: ch.url,
+      chapter: {
+        name: ch.name,
+        url: ch.url,
+        index: idx
+      },
       sourceUrl: comic.sourceUrl,
       comicDir
     })
@@ -172,7 +181,8 @@ async function _triggerAutoDownload(comic, detail, job) {
   if (payloads.length > 0) {
     console.log(`[Sync] 为《${detail.title || comic.title}》添加 ${payloads.length} 个下载任务`)
     for (const p of payloads) {
-      jobQueue.add('downloadComic', p, { priority: 2, maxRetries: 3 })
+      // Bug 8.3 修复: 单章节下载应使用 downloadChapter 而非 downloadComic
+      jobQueue.add('downloadChapter', p, { priority: 4, maxRetries: 3, source: 'auto' })
     }
   }
 }

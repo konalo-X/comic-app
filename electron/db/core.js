@@ -318,15 +318,16 @@ function rowToComic(row, opts = {}) {
   return result
 }
 
-function getDirectorySize(dirPath) {
+async function getDirectorySize(dirPath) {
   let total = 0
-  if (!fs.existsSync(dirPath)) return 0
-  for (const entry of fs.readdirSync(dirPath)) {
+  let entries
+  try { entries = await fs.promises.readdir(dirPath) } catch (_) { return 0 }
+  for (const entry of entries) {
     const entryPath = path.join(dirPath, entry)
     try {
-      const stat = fs.statSync(entryPath)
+      const stat = await fs.promises.stat(entryPath)
       if (stat.isDirectory()) {
-        total += getDirectorySize(entryPath)
+        total += await getDirectorySize(entryPath)
       } else if (stat.isFile()) {
         total += stat.size
       }

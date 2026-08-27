@@ -404,7 +404,7 @@ export default {
   overflow: hidden;
   box-shadow: var(--shadow-sm);
   transition: box-shadow 0.3s ease, border-color 0.3s ease;
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(8px);
 }
 
 .settings-card:hover {

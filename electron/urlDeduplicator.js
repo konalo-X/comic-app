@@ -42,13 +42,13 @@ class URLDeduplicator {
     if (!this.db) return
     
     try {
-      this.db.run(`CREATE TABLE IF NOT EXISTS url_cache (
+      this.db.exec(`CREATE TABLE IF NOT EXISTS url_cache (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         url TEXT UNIQUE,
         hash TEXT,
         created_at INTEGER
       )`)
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_url_cache_url ON url_cache(url)')
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_url_cache_url ON url_cache(url)')
       
       // 从数据库加载已有的URL到Bloom Filter
       this._loadFromDatabase()
@@ -64,13 +64,17 @@ class URLDeduplicator {
     if (!this.db) return
     
     try {
-      const r = this.db.exec('SELECT url FROM url_cache LIMIT 10000')  // 限制加载数量，避免启动过慢
-      if (r.length > 0) {
-        for (const row of r[0].values) {
-          this.bloom.add(row[0])
-          this.exactCache.add(row[0])
+      // Bug #7 修复: this.db.exec(sql).values 是 sql.js API 误用
+      // better-sqlite3: prepare(...).raw().all() 返回值数组数组; exec(sql) 只用于 DDL 返回 undefined
+      const rows = this.db.prepare('SELECT url FROM url_cache LIMIT 10000').raw().all()
+      if (rows && rows.length > 0) {
+        for (const row of rows) {
+          const url = row[0]
+          if (!url) continue
+          this.bloom.add(url)
+          this.exactCache.add(url)
         }
-        console.log(`[URLDeduplicator] 从数据库加载了 ${r[0].values.length} 个URL`)
+        console.log(`[URLDeduplicator] 从数据库加载了 ${rows.length} 个URL`)
       }
     } catch (e) {
       console.error('[URLDeduplicator] 加载数据库失败:', e.message)
@@ -118,10 +122,13 @@ class URLDeduplicator {
     // 如果启用了持久化，保存到数据库
     if (this.mode === 'persistent' && this.db) {
       try {
-        this.db.run('INSERT OR IGNORE INTO url_cache (url, created_at) VALUES (?, ?)', 
-          [url, Date.now()])
+        // Bug #10 修复: db.run(sql, [params]) 是 sql.js API; better-sqlite3 用 prepare().run(params)
+        this.db.prepare('INSERT OR IGNORE INTO url_cache (url, created_at) VALUES (?, ?)').run(url, Date.now())
       } catch (e) {
-        // 忽略重复URL的错误
+        // 只静默 UNIQUE 约束冲突, 其他 DB 错误记录日志
+        if (e.code !== 'SQLITE_CONSTRAINT') {
+          console.error('[URLDeduplicator] 持久化URL失败:', e.message)
+        }
       }
     }
   }
@@ -151,7 +158,8 @@ class URLDeduplicator {
     
     if (this.mode === 'persistent' && this.db) {
       try {
-        this.db.run('DELETE FROM url_cache')
+        // Bug #10 修复: db.run(DELETE) → db.exec(DELETE)
+        this.db.exec('DELETE FROM url_cache')
       } catch (e) {
         console.error('[URLDeduplicator] 清除数据库失败:', e.message)
       }

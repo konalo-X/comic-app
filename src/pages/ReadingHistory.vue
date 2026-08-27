@@ -584,7 +584,7 @@ function onImgError(e) {
   cursor: pointer;
   box-shadow: var(--shadow-sm);
   transition: all .25s cubic-bezier(0.4, 0, 0.2, 1);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(6px);
 }
 
 .timeline-card:hover {

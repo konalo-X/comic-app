@@ -123,8 +123,17 @@ async function scanLocalComics(dirPath) {
       cover = coverPath
     }
 
+    // Bug #42 修复: 目录名不等于漫画标题
+    // 剥离 Finder 去重后缀( 2 / (2) / _1 / -2 / （2）)后才是真实标题,
+    // 用于后续 DB 匹配 / 在线搜索; 目录名本身通过 scanPath+e.name 组装 localPath, 不受影响。
+    const cleanTitle = e.name
+      .replace(/[\s_\-（(]\s*\d+\s*[)）]?\s*$/g, '')
+      .replace(/[\s_\-]\s*\d+\s*$/g, '')
+      .trim() || e.name
+
     comics.push({
-      title: e.name,
+      title: cleanTitle,
+      dirName: e.name,
       coverPath: cover,
       chapters,
       totalImages: chapters.reduce((s, c) => s + c.imageCount, 0)
@@ -177,9 +186,12 @@ async function importLocalComic(comic, targetRoot, sourceUrl, destDir) {
   if (sourceUrl) {
     const existing = db.prepare('SELECT id, favorited FROM comics WHERE sourceUrl = ?').get(sourceUrl)
     if (existing) {
-      db.prepare('UPDATE comics SET chapter_count=?, updatedAt=?, favorited=1 WHERE id=?').run(comic.chapters.length, now, existing.id)
-      db.prepare('DELETE FROM chapters WHERE comic_id=?').run(existing.id)
+      // Bug #26 修复: UPDATE comics + DELETE chapters + INSERT chapters 放进同一个事务
+      const updateStmt = db.prepare('UPDATE comics SET chapter_count=?, updatedAt=?, favorited=1 WHERE id=?')
+      const deleteStmt = db.prepare('DELETE FROM chapters WHERE comic_id=?')
       runInTransaction(db, () => {
+        updateStmt.run(comic.chapters.length, now, existing.id)
+        deleteStmt.run(existing.id)
         for (let i = 0; i < dbChapters.length; i++) {
           insertChapterRow(db, existing.id, dbChapters[i], i)
         }
@@ -226,6 +238,8 @@ async function registerExistingDownload(comic, sourceUrl) {
   let finalComicId = null
   let matchedBy = null
   let wasFavoritedBefore = false
+  // Bug #42 修复: 同名多本漫画的去重后缀 ( 2/_1/(2)) 导致 includes 模糊匹配串目录
+  let needsNewRowDueToDirConflict = false
 
   if (sourceUrl) {
     const r1 = db.prepare('SELECT id, favorited FROM comics WHERE sourceUrl = ?').get(sourceUrl)
@@ -237,16 +251,26 @@ async function registerExistingDownload(comic, sourceUrl) {
   }
 
   if (!finalComicId) {
-    const allComics = db.prepare('SELECT id, title, favorited FROM comics').all()
+    const allComics = db.prepare('SELECT id, title, favorited, local_path FROM comics').all()
     const match = findExistingComicMatch(allComics, comic.title)
     if (match) {
-      finalComicId = match.row.id
-      wasFavoritedBefore = !!match.row.favorited
-      matchedBy = match.matchType
+      // Bug #42 修复: 标题模糊匹配后, 若该行已绑定了一个与当前目录不同的 local_path,
+      // 说明是另一本同名漫画 (例: "找回自我" 匹配到 "找回自我 2" 的现有行),
+      // 不应合并写入, 否则会把这本的 local_path/local_cover 串写到另一本上。
+      const incomingDir = (comic.localPath || '').trim()
+      const existingDir = (match.row.local_path || '').trim()
+      if (incomingDir && existingDir && incomingDir !== existingDir) {
+        console.log(`[registerExistingDownload] 标题匹配到另一本的现有行, 但目录不匹配 -> 新建行避免串写: 输入="${comic.title}"(${incomingDir}) vs 现有="${match.row.title}"(${existingDir})`)
+        needsNewRowDueToDirConflict = true
+      } else {
+        finalComicId = match.row.id
+        wasFavoritedBefore = !!match.row.favorited
+        matchedBy = match.matchType
+      }
     }
   }
 
-  if (!finalComicId) {
+  if (!finalComicId || needsNewRowDueToDirConflict) {
     finalComicId = 'local-' + now.toString(36) + '-' + Math.random().toString(36).slice(2, 8)
     matchedBy = 'new'
   }
@@ -263,18 +287,86 @@ async function registerExistingDownload(comic, sourceUrl) {
       comicInserted = true
       wasFavoritedBefore = false
     } catch (err) {
+      // Bug #42 修复: INSERT 失败(多半是 UNIQUE 冲突 sourceUrl 或 id), 改为
+      //  按 local_path 精确匹配的单行 UPDATE, 或在无匹配时再新建。之前 WHERE title=?
+      //  会把所有同名漫画 (找回自我 x 2~3 本) 的 local_path/local_cover 一起改掉, 造成毁灭性串写。
       console.error(`[DB] registerExistingDownload INSERT《${comic.title}》失败:`, err.message)
       matchedBy = 'title-exact-fallback'
-      db.prepare('UPDATE comics SET chapter_count = ?, cover = COALESCE(cover, ?), local_cover = COALESCE(local_cover, ?), favorited = 1, local_path = COALESCE(local_path, ?), updatedAt = ? WHERE title = ?').run(
-        chapters.length, null, localCover, comic.localPath || null, now, comic.title)
+      const inDir = comic.localPath || ''
+      if (inDir) {
+        const existing = db.prepare('SELECT id FROM comics WHERE local_path = ? LIMIT 1').get(inDir)
+        if (existing) {
+          db.prepare('UPDATE comics SET chapter_count = ?, cover = COALESCE(cover, ?), local_cover = COALESCE(local_cover, ?), favorited = 1, updatedAt = ? WHERE id = ?').run(
+            chapters.length, null, localCover, now, existing.id)
+          finalComicId = existing.id
+        } else {
+          // 再试一次: 同名且没有 local_path 的行, 只会挑一条来 UPDATE
+          const row = db.prepare('SELECT id FROM comics WHERE title = ? AND (local_path IS NULL OR local_path = \'\') LIMIT 1').get(comic.title)
+          if (row) {
+            db.prepare('UPDATE comics SET chapter_count = ?, cover = COALESCE(cover, ?), local_cover = COALESCE(local_cover, ?), favorited = 1, local_path = ?, updatedAt = ? WHERE id = ?').run(
+              chapters.length, null, localCover, inDir, now, row.id)
+            finalComicId = row.id
+          } else {
+            // 最后兜底: 再建一条独立行
+            const altId = 'local-fb-' + now.toString(36) + '-' + Math.random().toString(36).slice(2, 8)
+            db.prepare('INSERT INTO comics (id, sourceUrl, title, cover, local_cover, author, status, desc_text, tags, category, updateTime, chapter_count, update_delta, favorited, local_path, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(
+              altId, null, comic.title, null, localCover, '', '连载中', '', '', '', null, chapters.length, 0, 1, inDir, now, now)
+            finalComicId = altId
+            comicInserted = true
+          }
+        }
+      } else {
+        // 无 local_path 时不做破坏性更新, 只挑 title 匹配的第一条无 local_path 行更新
+        const row = db.prepare('SELECT id FROM comics WHERE title = ? AND (local_path IS NULL OR local_path = \'\') LIMIT 1').get(comic.title)
+        if (row) {
+          db.prepare('UPDATE comics SET chapter_count = ?, cover = COALESCE(cover, ?), local_cover = COALESCE(local_cover, ?), favorited = 1, updatedAt = ? WHERE id = ?').run(
+            chapters.length, null, localCover, now, row.id)
+          finalComicId = row.id
+        }
+      }
     }
   } else {
     const effectiveSourceUrl = sourceUrl || (() => {
-      const r = db.prepare('SELECT sourceUrl FROM comics WHERE id = ?').get(finalComicId)
+      const r = db.prepare('SELECT sourceUrl, local_path AS lp FROM comics WHERE id = ?').get(finalComicId)
       return r ? r.sourceUrl : null
     })()
-    db.prepare('UPDATE comics SET chapter_count = ?, local_cover = COALESCE(NULLIF(local_cover, \'\'), ?), sourceUrl = COALESCE(NULLIF(sourceUrl, \'\'), ?), favorited = 1, local_path = COALESCE(local_path, ?), updatedAt = ? WHERE id = ?').run(
-      chapters.length, localCover, effectiveSourceUrl || null, comic.localPath || null, now, finalComicId)
+    // Bug #42 修复: 仅当匹配方式是 sourceUrl 精确匹配或该 row 还没有 local_path 时,
+    // 才允许用当前扫描到的目录写入。若已有不同目录 (说明是另一本同名漫画合并了数据),
+    // 不能串写, 同时新建行隔离。
+    const existingRow = db.prepare('SELECT local_path AS lp, title AS t FROM comics WHERE id = ?').get(finalComicId)
+    const rowDir = existingRow?.lp || ''
+    const inDir = comic.localPath || ''
+    const allowWriteLocal = (
+      matchedBy === 'sourceUrl' ||
+      !rowDir ||
+      rowDir === inDir
+    )
+    if (!allowWriteLocal && inDir && rowDir && inDir !== rowDir) {
+      console.log(`[registerExistingDownload] UPDATE 阶段检测到目录冲突, 改为新建独立行: 现有="${rowDir}" vs 本次="${inDir}"`)
+      const altId = 'local-' + now.toString(36) + '-' + Math.random().toString(36).slice(2, 8)
+      db.prepare('INSERT INTO comics (id, sourceUrl, title, cover, local_cover, author, status, desc_text, tags, category, updateTime, chapter_count, update_delta, favorited, local_path, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(
+        altId, null, comic.title, null, localCover, '', '连载中', '', '', '', null, chapters.length, 0, 1, inDir, now, now)
+      finalComicId = altId
+      matchedBy = 'new-dir-conflict-insert'
+      comicInserted = true
+    } else {
+      const fields = ['chapter_count = ?', 'favorited = 1', 'updatedAt = ?']
+      const vals = [chapters.length, now]
+      if (localCover) {
+        fields.push("local_cover = COALESCE(NULLIF(local_cover, ''), ?)")
+        vals.push(localCover)
+      }
+      if (effectiveSourceUrl) {
+        fields.push("sourceUrl = COALESCE(NULLIF(sourceUrl, ''), ?)")
+        vals.push(effectiveSourceUrl)
+      }
+      if (comic.localPath) {
+        fields.push('local_path = COALESCE(local_path, ?)')
+        vals.push(comic.localPath)
+      }
+      vals.push(finalComicId)
+      db.prepare(`UPDATE comics SET ${fields.join(', ')} WHERE id = ?`).run(...vals)
+    }
   }
 
   const existingChapters = db.prepare('SELECT sort_order FROM chapters WHERE comic_id = ?').all(finalComicId)
@@ -428,7 +520,9 @@ async function autoScanLocalComics(paths, sources, onProgress) {
 
       if (sourceUrl) {
         totalMatched++
-        comic.localPath = path.join(scanPath, comic.title)
+        // Bug #42 修复: 本地路径必须用真实目录名 dirName, 不能用 clean 过的 title
+        // (否则 "找回自我_1" 目录 title 变 "找回自我" -> 拼成了不存在的 ".../找回自我" 路径, 串到另一本的目录上!)
+        comic.localPath = path.join(scanPath, comic.dirName || comic.title)
         const result = await registerExistingDownload(comic, sourceUrl)
         if (result.newlyInserted || result.registeredCount > 0) {
           totalImported++
@@ -436,7 +530,7 @@ async function autoScanLocalComics(paths, sources, onProgress) {
           totalSkipped++
         }
       } else {
-        comic.localPath = path.join(scanPath, comic.title)
+        comic.localPath = path.join(scanPath, comic.dirName || comic.title)
         const result = await registerExistingDownload(comic, null)
         if (result && (result.newlyInserted || result.registeredCount > 0)) {
           totalImported++
@@ -487,12 +581,22 @@ async function importLocalComics(dirPath, onProgress) {
 
     try {
       const matched = await matchComicByTitle(comic.title)
+      // Bug #42: 用真实目录名 dirName, 不要用 clean 过的 title
+      const actualLocalPath = path.join(dirPath, comic.dirName || comic.title)
       if (matched) {
-        const localPath = path.join(dirPath, comic.title)
-        core.getDB().prepare('UPDATE comics SET local_path = ? WHERE id = ?').run(localPath, matched.id)
-        skipped++
+        // 目录冲突检测
+        const row = core.getDB().prepare('SELECT local_path AS lp FROM comics WHERE id = ?').get(matched.id)
+        if (!row?.lp || row.lp === actualLocalPath) {
+          core.getDB().prepare('UPDATE comics SET local_path = ? WHERE id = ?').run(actualLocalPath, matched.id)
+          skipped++
+        } else {
+          // 冲突: 新建独立行, 避免串写
+          comic.localPath = actualLocalPath
+          await registerExistingDownload(comic, null)
+          imported++
+        }
       } else {
-        comic.localPath = path.join(dirPath, comic.title)
+        comic.localPath = actualLocalPath
         await registerExistingDownload(comic, null)
         imported++
       }

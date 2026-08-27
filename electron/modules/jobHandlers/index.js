@@ -77,7 +77,11 @@ function initJobQueue() {
       const updated = data.result.updated || 0
       if (updated > 0) {
         console.log(`[AutoRepair] sync 完成，发现 ${updated} 部漫画有更新，5 分钟后自动检查已下载漫画完整性`)
-        setTimeout(() => {
+        // Bug #17 修复: 存引用到模块级变量, stopAutoTasks 时可清理; 回调中加 stopped guard
+        if (_autoRepairTimer) clearTimeout(_autoRepairTimer)
+        _autoRepairTimer = setTimeout(() => {
+          _autoRepairTimer = null
+          if (_autoTasksStopped) return
           if (shouldSkipAutoTask()) {
             console.log('[AutoRepair] 系统空闲不足，跳过自动修复')
             return
@@ -97,9 +101,13 @@ function initJobQueue() {
   jobQueue.on('enqueued', (data) => notifyQueueChanged('enqueued', data))
   jobQueue.on('cancelled', (data) => notifyQueueChanged('cancelled', data))
   jobQueue.on('retried', (data) => notifyQueueChanged('retried', data))
+  jobQueue.on('removed', (data) => notifyQueueChanged('removed', data))
+  jobQueue.on('cleared', (data) => notifyQueueChanged('cleared', data))
 }
 
 let _autoTasksStarted = false
+let _autoRepairTimer = null
+let _autoTasksStopped = false
 
 function startAutoTasks() {
   if (_autoTasksStarted) {
@@ -108,6 +116,7 @@ function startAutoTasks() {
   }
   _autoTasksStarted = true
   stopAutoTasks()
+  _autoTasksStopped = false  // Bug #17: stopAutoTasks 设了 true, 这里重置
   let autoUpdateEnabled = true
   let autoUpdateIntervalHours = 2
   try {
@@ -121,7 +130,10 @@ function startAutoTasks() {
     return
   }
 
-  const syncIntervalHours = Math.max(4, autoUpdateIntervalHours)
+  // [增强 2026-08-20] 尊重用户在设置里填的追更间隔,去掉 4 小时强制下限。
+  // 之前 Math.max(4, autoUpdateIntervalHours) 会让用户设的 2h 永远不生效。
+  // 仅做最小安全兜底(>=15 分钟),防止过短把源站打爆/自己卡死。
+  const syncIntervalHours = Math.max(0.25, autoUpdateIntervalHours)
   const syncMs = syncIntervalHours * 60 * 60 * 1000
 
   const autoTimers = []
@@ -225,7 +237,7 @@ function startAutoTasks() {
 
     lastFullSyncAt = now
     console.log('[Idle Sync] 检测到系统空闲，触发全量同步')
-    jobQueue.add('sync', {}, { priority: 3, maxRetries: 3, checkRateLimit: false })
+    jobQueue.add('sync', {}, { priority: 4, maxRetries: 3, checkRateLimit: false, source: 'auto' })
   }, IDLE_CHECK_INTERVAL)
   autoTimers.push(idleCheckTimer)
 
@@ -236,6 +248,9 @@ function startAutoTasks() {
 
 function stopAutoTasks() {
   _autoTasksStarted = false
+  _autoTasksStopped = true
+  // Bug #17 修复: 清理 initJobQueue 中注册的 5min autoRepair 定时器
+  if (_autoRepairTimer) { clearTimeout(_autoRepairTimer); _autoRepairTimer = null }
   const autoTimers = getAutoTimers()
   for (const t of autoTimers) {
     clearTimeout(t)

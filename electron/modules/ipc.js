@@ -150,6 +150,8 @@ function registerAllIPC(deps) {
   // --- Job Queue ---
   ipcMain.handle('job:add', async (_, type, payload, opts) => jq.add(type, payload, opts))
   ipcMain.handle('job:cancel', async (_, id) => jq.cancel(id))
+  ipcMain.handle('job:remove', async (_, id) => jq.deleteJob(id))
+  ipcMain.handle('job:removeAllDownloads', async () => jq.deleteJobsByType(['downloadComic', 'downloadChapter']))
   ipcMain.handle('job:retry', async (_, id) => jq.retry(id))
   ipcMain.handle('job:retryAll', async () => jq.retryAll())
   ipcMain.handle('job:clear', async () => jq.clear())
@@ -324,10 +326,6 @@ function registerAllIPC(deps) {
   function getBackgroundTasks() {
     const tasks = []
     const stats = getJobQueue() ? jq.getStats() : {}
-    // 注意: jq.listJobs('active') 内部查的是 status IN(waiting,running,active,paused),
-    // 会把 waiting 也算进来。footer 的“运行中”必须只统计真正 running/active 的,
-    // 否则与 waiting 重叠导致显示 “运行中 199 / 等待 199” 这种假相等。
-    // 改用按类型聚合的真实计数(不受 limit 截断)。
     const q = getJobQueue()
     const countByTypeStatus = (statuses) => {
       if (!q || !q.db) return {}
@@ -376,6 +374,9 @@ function registerAllIPC(deps) {
     const settingsConcurrency = settings.concurrency || 5
     const settingsDownloadConcurrency = settings.downloadConcurrency || 3
 
+    const downloadActiveCount = (activeByType.downloadChapter || 0) + (activeByType.downloadComic || 0)
+    const downloadWaitingCount = (waitingByType.downloadChapter || 0) + (waitingByType.downloadComic || 0)
+
     return {
       tasks,
       activeCount: stats.active || 0,
@@ -384,6 +385,8 @@ function registerAllIPC(deps) {
       failedCount: stats.failed || 0,
       concurrency: settingsConcurrency,
       downloadConcurrency: settingsDownloadConcurrency,
+      downloadActiveCount,
+      downloadWaitingCount,
       lastUpdated: Date.now()
     }
   }
@@ -426,9 +429,12 @@ function registerAllIPC(deps) {
   ipcMain.handle('update:install', async () => { quitAndInstall(); return true })
 
   const { getProxyPort } = require('../utils/proxyUrl')
+  // Bug #36/#38: 同步 sendSync 仅保留向后兼容 (旧版本/旧 preload)
   ipcMain.on('proxy:getPort', (event) => {
     event.returnValue = getProxyPort()
   })
+  // 新 preload 用异步 invoke, 避免同步阻塞渲染进程
+  ipcMain.handle('proxy:getPort-async', async () => getProxyPort())
 
   // 捕获渲染进程错误
   ipcMain.on('renderer:error', (_, data) => {
@@ -953,9 +959,13 @@ function registerAllIPC(deps) {
             continue
           }
 
-          raw.prepare('DELETE FROM chapters WHERE comic_id = ?').run(row.id)
-          raw.prepare('DELETE FROM download_records WHERE comic_id = ?').run(row.id)
-          raw.prepare('DELETE FROM comics WHERE id = ?').run(row.id)
+          // Bug #33/#39 修复: 4 条 DELETE 包进事务, 避免中途崩溃产生孤儿记录 (也清 reading_progress)
+          raw.transaction(() => {
+            raw.prepare('DELETE FROM chapters WHERE comic_id = ?').run(row.id)
+            raw.prepare('DELETE FROM download_records WHERE comic_id = ?').run(row.id)
+            raw.prepare('DELETE FROM reading_progress WHERE comic_id = ?').run(row.id)
+            raw.prepare('DELETE FROM comics WHERE id = ?').run(row.id)
+          })()
           results.deleted++
           results.details.push({
             id: row.id,

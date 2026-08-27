@@ -48,32 +48,30 @@ class AdaptiveRequestPool {
    * 处理队列
    */
   async _drain() {
-    if (this.running >= this.currentConcurrency) return
-    if (this.queue.length === 0) return
-    
-    this.running++
-    const item = this.queue.shift()
-    const startTime = Date.now()
-    
-    try {
-      const result = await item.fn()
-      const responseTime = Date.now() - startTime
-      
-      // 记录成功和响应时间
-      this.successCount++
-      this.responseTimes.push(responseTime)
-      if (this.responseTimes.length > 100) {
-        this.responseTimes.shift()  // 只保留最近100个响应时间
-      }
-      
-      item.resolve(result)
-    } catch (e) {
-      // 记录失败
-      this.failCount++
-      item.reject(e)
-    } finally {
-      this.running--
-      this._drain()
+    // Bug #16 修复: 改为 while 循环一次填满所有可用槽位, 而非每次只起一个
+    while (this.running < this.currentConcurrency && this.queue.length > 0) {
+      this.running++
+      const item = this.queue.shift()
+      const startTime = Date.now()
+
+      ;(async () => {
+        try {
+          const result = await item.fn()
+          const responseTime = Date.now() - startTime
+          this.successCount++
+          this.responseTimes.push(responseTime)
+          if (this.responseTimes.length > 100) {
+            this.responseTimes.shift()
+          }
+          item.resolve(result)
+        } catch (e) {
+          this.failCount++
+          item.reject(e)
+        } finally {
+          this.running--
+          this._drain()
+        }
+      })()
     }
   }
   
@@ -81,9 +79,18 @@ class AdaptiveRequestPool {
    * 启动定期调整并发数
    */
   _startPeriodicAdjustment() {
-    setInterval(() => {
-      this._adjustConcurrency()
+    // Bug #16 修复: 存引用 + unref + 加 destroy 方法, 避免 interval 永不清除
+    this._adjustTimer = setInterval(() => {
+      try { this._adjustConcurrency() } catch (e) { console.warn('[AdaptivePool] adjust error:', e.message) }
     }, this.adjustInterval)
+    if (this._adjustTimer.unref) this._adjustTimer.unref()
+  }
+
+  destroy() {
+    if (this._adjustTimer) {
+      clearInterval(this._adjustTimer)
+      this._adjustTimer = null
+    }
   }
   
   /**
@@ -92,9 +99,12 @@ class AdaptiveRequestPool {
   _adjustConcurrency() {
     const total = this.successCount + this.failCount
     if (total < 10) return  // 样本太少，不调整
-    
+
     const successRate = this.successCount / total
-    const avgResponseTime = this.responseTimes.reduce((a, b) => a + b, 0) / this.responseTimes.length
+    // Bug #16 修复: responseTimes 为空时(全部失败无响应时间) avgResponseTime 会 NaN
+    const avgResponseTime = this.responseTimes.length > 0
+      ? this.responseTimes.reduce((a, b) => a + b, 0) / this.responseTimes.length
+      : this.responseTimeThresholdSlow + 1  // 视为慢, 倾向降并发
     
     let action = 'keep'
     let oldConcurrency = this.currentConcurrency
@@ -119,6 +129,8 @@ class AdaptiveRequestPool {
     
     if (action !== 'keep') {
       console.log(`[AdaptivePool] 并发数调整：${oldConcurrency} → ${this.currentConcurrency} (成功率=${(successRate*100).toFixed(1)}%, 响应时间=${Math.round(avgResponseTime)}ms)`)
+      // Bug #16 修复: 并发提升后主动触发 _drain 填充新槽位
+      if (action === 'increase') this._drain()
     }
   }
   

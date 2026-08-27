@@ -76,7 +76,7 @@ const navItems = [
   padding-top: calc(var(--header-h) + 24px);
   padding-bottom: 14px;
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(22px);
+  backdrop-filter: blur(8px);
 }
 
 .sidebar-nav {

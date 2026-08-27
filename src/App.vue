@@ -10,7 +10,7 @@
       </router-view>
     </main>
 
-    <footer class="footer-bar water-ripple" :class="{ 'footer-expanded': footerExpanded }">
+    <footer class="footer-bar" :class="{ 'footer-expanded': footerExpanded, 'footer-active': footerHasActive }">
       <div class="footer-row">
         <div class="footer-left" @click="footerExpanded = !footerExpanded">
           <div v-if="footerTasks.length > 0" class="footer-item">
@@ -105,7 +105,7 @@ v-for="n in notifications" :key="n.id"
 </template>
 
 <script setup>
-import { ref, provide, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, provide, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Sidebar from '@/components/Sidebar.vue'
 import Header from '@/components/Header.vue'
@@ -166,6 +166,11 @@ const footerExpanded = ref(false)
 const footerRotateIndex = ref(0)
 const failedModalVisible = ref(false)
 const failedJobs = ref([])
+
+// 有活跃后台任务时才让 footer 动起来（空闲停掉水波纹动画，降 GPU 占用）
+const footerHasActive = computed(() => {
+  return footerTasks.value.length > 0 || footerData.activeDownloads > 0
+})
 
 const taskTypeLabels = {
   sync: '同步追更',
@@ -230,16 +235,21 @@ async function refreshFooterData() {
     const total = await window.dbApi?.getComicsCount?.() ?? '-'
     footerData.value.totalComics = total
 
-    const stats = await window.jobApi?.stats?.() ?? {}
-    footerData.value.activeDownloads = stats.active || 0
-    footerData.value.waitingCount = stats.waiting || 0
-    footerData.value.completedCount = stats.completed || 0
-    footerData.value.failedCount = stats.failed || 0
-
     const bgTasks = await window.appApi?.getBackgroundTasks?.()
     if (bgTasks) {
+      footerData.value.activeDownloads = bgTasks.downloadActiveCount ?? bgTasks.activeCount ?? 0
+      footerData.value.waitingCount = bgTasks.downloadWaitingCount ?? bgTasks.waitingCount ?? 0
+      footerData.value.activeCount = bgTasks.activeCount ?? 0
+      footerData.value.completedCount = bgTasks.completedCount ?? 0
+      footerData.value.failedCount = bgTasks.failedCount ?? 0
       footerData.value.downloadConcurrency = bgTasks.downloadConcurrency || 3
       footerTasks.value = bgTasks.tasks || []
+    } else {
+      const stats = await window.jobApi?.stats?.() ?? {}
+      footerData.value.activeDownloads = stats.active || 0
+      footerData.value.waitingCount = stats.waiting || 0
+      footerData.value.completedCount = stats.completed || 0
+      footerData.value.failedCount = stats.failed || 0
     }
 
     try {
@@ -291,8 +301,9 @@ onMounted(() => {
   if (window.appApi?.onBackgroundTasks) {
     cleanupBgTasks = window.appApi.onBackgroundTasks((data) => {
       footerData.value.downloadConcurrency = data.downloadConcurrency || 3
-      footerData.value.activeDownloads = data.activeCount || 0
-      footerData.value.waitingCount = data.waitingCount || 0
+      footerData.value.activeDownloads = data.downloadActiveCount ?? data.activeCount ?? 0
+      footerData.value.waitingCount = data.downloadWaitingCount ?? data.waitingCount ?? 0
+      footerData.value.activeCount = data.activeCount ?? 0
       footerData.value.completedCount = data.completedCount || 0
       footerData.value.failedCount = data.failedCount || 0
       footerTasks.value = data.tasks || []
@@ -429,7 +440,7 @@ const navItems = [
   background: var(--content-bg);
   border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(8px);
 }
 
 .footer-bar {
@@ -443,9 +454,33 @@ const navItems = [
   color: var(--text-sub);
   z-index: 10;
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(8px);
   position: relative;
   overflow: hidden;
+}
+
+/* 仅在有活跃后台任务时显示水波纹动画，空闲时停掉以降 GPU 占用 */
+.footer-bar.footer-active::before,
+.footer-bar.footer-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 200%;
+  height: 200%;
+  border-radius: 43%;
+  pointer-events: none;
+  z-index: 1;
+}
+.footer-bar.footer-active::before {
+  background: linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.08) 30%, rgba(255,255,255,0.12) 50%, rgba(255,255,255,0.06) 70%, transparent 100%);
+  animation: waterWave 4s linear infinite;
+}
+.footer-bar.footer-active::after {
+  border-radius: 40%;
+  background: linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.04) 75%, transparent 100%);
+  animation: waterWave 6s linear infinite reverse;
 }
 
 .footer-row {
@@ -546,7 +581,7 @@ const navItems = [
   border: 1px solid var(--shell-border);
   background: var(--shell-bg);
   color: var(--text);
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(8px);
 }
 
 .mobile-nav {
@@ -562,7 +597,7 @@ const navItems = [
   justify-content: space-around;
   align-items: center;
   padding-bottom: env(safe-area-inset-bottom);
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(8px);
 }
 
 .mobile-nav-item {
@@ -652,7 +687,7 @@ const navItems = [
   font-size: 13px;
   line-height: 1.5;
   border: 1px solid;
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(6px);
 }
 .notification-success { background: rgba(16, 185, 129, 0.08); color: var(--success); border-color: rgba(16, 185, 129, 0.2); }
 .notification-info    { background: rgba(99, 102, 241, 0.08); color: var(--brand); border-color: rgba(99, 102, 241, 0.2); }
@@ -719,7 +754,7 @@ const navItems = [
   justify-content: space-around;
   align-items: center;
   padding-bottom: env(safe-area-inset-bottom);
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(8px);
 }
 
 .mobile-nav-item {
@@ -789,7 +824,7 @@ const navItems = [
   display: flex;
   flex-direction: column;
   animation: modalIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  backdrop-filter: blur(20px);
+  backdrop-filter: blur(8px);
 }
 
 .modal-header {

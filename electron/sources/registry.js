@@ -47,9 +47,14 @@ class SourceRegistry {
     const promises = []
     for (const source of this._sources.values()) {
       promises.push(
-        source.search(query, page).then(items =>
-          items.map(item => ({ ...item, _source: source.id }))
-        ).catch(e => {
+        source.search(query, page).then(raw => {
+          // 兼容不同 source 返回格式：裸数组 / { data: [...] } / { items: [...] }
+          const items = Array.isArray(raw) ? raw
+            : (raw && Array.isArray(raw.data)) ? raw.data
+            : (raw && Array.isArray(raw.items)) ? raw.items
+            : []
+          return items.map(item => ({ ...item, _source: source.id }))
+        }).catch(e => {
           console.warn(`[SourceRegistry] ${source.name} 搜索失败:`, e.message)
           return []
         })

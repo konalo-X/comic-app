@@ -76,7 +76,7 @@ function closeWin() { window.windowApi?.close?.() }
   justify-content: center;
   padding: 0 24px 0 12px;
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(20px);
+  backdrop-filter: blur(8px);
   -webkit-app-region: drag;
   user-select: none;
   position: relative;
@@ -102,7 +102,7 @@ function closeWin() { window.windowApi?.close?.() }
   border-radius: 14px;
   transition: all 0.25s ease;
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(8px);
   -webkit-app-region: no-drag;
 }
 

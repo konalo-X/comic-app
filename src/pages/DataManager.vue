@@ -453,7 +453,7 @@ function formatSize(bytes) {
   padding: 24px;
   margin-bottom: 24px;
   box-shadow: var(--shadow-md);
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(8px);
 }
 
 .section-header {

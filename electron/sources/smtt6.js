@@ -46,7 +46,9 @@ function parseDateToTimestamp(dateStr) {
 }
 
 const RETRY_TIMES = 5
-const TIMEOUT = 90000
+const TIMEOUT = 20000
+// 重定向最大次数，防止重定向环导致无限递归栈溢出
+const MAX_REDIRECTS = 5
 
 async function _sleepWithCancel(ms, cancelledFn, cancelMsg) {
   if (!cancelledFn) return sleep(ms)
@@ -62,14 +64,18 @@ async function _sleepWithCancel(ms, cancelledFn, cancelMsg) {
 
 // ========== 智能爬虫配置 ==========
 const CRAWL_CONFIG = {
-  baseDelay: 2000,
-  randomDelayMax: 3000,
+  // 优化(Bug #47): 原 maxConcurrency=1 导致所有 smtt6 搜索/详情页/章节列表请求全串行,
+  // 每次再间隔 2~5s, autoEnrich 抓 3000 本漫画 ≈ 1.7~4.2 小时, 体感"追更/下载像卡住".
+  // 实测 hide.me 隧道出口干净、源站暂无 429/封禁, 提到 3 并发(详情页抓取). 图片下载走 net.request 直连,
+  // 不经过此队列, 不受影响. 若日后出现 429 可降回 2 或 1.
+  baseDelay: 800,
+  randomDelayMax: 1200,
   adaptiveDelay: true,
   successDelayDecrease: 200,
   errorDelayIncrease: 1000,
-  minDelay: 1500,
+  minDelay: 600,
   maxDelay: 15000,
-  maxConcurrency: 1,
+  maxConcurrency: 3,
   rotateHeaders: true,
   rotateUA: true,
   persistCookies: true,
@@ -101,6 +107,12 @@ function recordSuccess() {
 function recordError() {
   if (!CRAWL_CONFIG.adaptiveDelay) return
   currentAdaptiveDelay = Math.min(CRAWL_CONFIG.maxDelay, currentAdaptiveDelay + CRAWL_CONFIG.errorDelayIncrease)
+}
+// Bug #48: 确定性错误(空/非法 URL, 404 等)不应累加退避延迟, 否则个别脏数据会把全局
+// 并发拖到 maxDelay(15s), 抵消并发优化. 仅网络类错误(timeout/重置/DNS/5xx)才退避.
+function recordErrorIfNetwork(msg) {
+  const networkish = /timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|socket hang|连接被重置|DNS|ENOTFOUND|EAI_AGAIN|5\d\d|网络请求失败/i.test(msg || '')
+  if (networkish) recordError()
 }
 function calculateWaitTime() {
   const base = CRAWL_CONFIG.adaptiveDelay ? currentAdaptiveDelay : CRAWL_CONFIG.baseDelay
@@ -148,8 +160,21 @@ function absoluteUrl(href, base) {
 }
 
 // ========== 核心请求（Electron net 模块 - Chromium 网络栈） ==========
-function _fetchWithElectronNet(urlStr, referer, fingerprint) {
+function _fetchWithElectronNet(urlStr, referer, fingerprint, redirectCount = 0) {
+  // 【硬超时兜底】net.request 在连接阶段(DNS/TLS)可能彻底挂死(连 error/response 回调都不触发),
+  // 此时内置 timeoutTimer 的 request.abort() 也可能失效, 导致 Promise 永久 pending -> 主线程看似空闲但
+  // 上层 await 永远不返回 -> JobQueue 任务卡死。这里用独立定时器做外层硬超时兜底, 超时直接 reject。
+  // 注意: hardTimer 必须在 Promise 内部定义, 才能捕获到正确的 resolve/reject,
+  // 放在 Promise 外部会因 reject 尚未定义而失效(曾踩坑: 硬超时从不触发)。
   return new Promise((resolve, reject) => {
+    const HARD_TIMEOUT = Math.max(TIMEOUT * 2, 45000)
+    const hardTimer = setTimeout(() => {
+      try { clearTimeout(timeoutTimer) } catch (_) {}
+      try { request && request.abort() } catch (_) {}
+      reject(new Error('hard timeout (net.request 连接阶段挂死)'))
+    }, HARD_TIMEOUT)
+    if (hardTimer.unref) hardTimer.unref()
+
     const fp = fingerprint || generateRequestFingerprint()
     const parsed = new URL(urlStr)
 
@@ -168,8 +193,8 @@ function _fetchWithElectronNet(urlStr, referer, fingerprint) {
       'Upgrade-Insecure-Requests': '1',
     }
 
-    if (referer) headers['Referer'] = referer
-
+    // Bug #45 修复: Referer 通过 referrer 选项传给 Chromium, 不再用 setHeader
+    //   (跨域 referrer 用 setHeader 会被 Chromium 判定无效并 ERR_BLOCKED_BY_CLIENT)
     const cookies = getCookies(parsed.hostname)
     if (cookies) headers['Cookie'] = cookies
 
@@ -177,6 +202,7 @@ function _fetchWithElectronNet(urlStr, referer, fingerprint) {
       method: 'GET',
       url: urlStr,
       redirect: 'manual',
+      referrer: referer || '',
     })
 
     // 设置请求头
@@ -191,9 +217,10 @@ function _fetchWithElectronNet(urlStr, referer, fingerprint) {
 
     request.on('response', (response) => {
       clearTimeout(timeoutTimer)
+      clearTimeout(hardTimer)
 
       // body 接收超时保护：response 头已到、但 data/end 永远不来（半截卡死）时兜底
-      const bodyTimer = setTimeout(() => {
+      let bodyTimer = setTimeout(() => {
         try { response.destroy() } catch (_) {}
         try { request.abort() } catch (_) {}
         reject(new Error('body timeout'))
@@ -211,7 +238,10 @@ function _fetchWithElectronNet(urlStr, referer, fingerprint) {
         }
         clearTimeout(bodyTimer)
         response.destroy()
-        return resolve(_fetchWithElectronNet(absoluteUrl(location, urlStr), urlStr, fp))
+        if (redirectCount + 1 > MAX_REDIRECTS) {
+          return reject(new Error('Too many redirects'))
+        }
+        return resolve(_fetchWithElectronNet(absoluteUrl(location, urlStr), urlStr, fp, redirectCount + 1))
       }
 
       if (statusCode >= 400) {
@@ -222,11 +252,19 @@ function _fetchWithElectronNet(urlStr, referer, fingerprint) {
 
       const chunks = []
       response.on('data', (chunk) => {
+        // Bug #8 修复: 收到 data 时不仅要 clear 还要 reset(重启)bodyTimer
+        // 之前只 clearTimeout 会导致 timer 停掉后后续 chunk 永久不来时挂死
         clearTimeout(bodyTimer)
+        bodyTimer = setTimeout(() => {
+          try { response.destroy() } catch (_) {}
+          try { request.abort() } catch (_) {}
+          reject(new Error('body timeout'))
+        }, TIMEOUT)
         chunks.push(chunk)
       })
       response.on('end', () => {
         clearTimeout(bodyTimer)
+        clearTimeout(hardTimer)
         const raw = Buffer.concat(chunks)
         // Electron net 自动解压，直接转字符串
         const ct = (response.headers['content-type'] || '').toLowerCase()
@@ -246,14 +284,36 @@ function _fetchWithElectronNet(urlStr, referer, fingerprint) {
 
     request.on('error', (err) => {
       clearTimeout(timeoutTimer)
+      clearTimeout(hardTimer)
       reject(err)
     })
 
+    // 任意成功/重定向/拒绝路径都清理硬定时器
+    const _origResolve = resolve
+    const _origReject = reject
+    // 包装 resolve/reject 以清硬定时器(重定向递归的 resolve 在外层, 这里直接清)
+    const cleanup = () => clearTimeout(hardTimer)
+    const wrappedResolve = (v) => { cleanup(); _origResolve(v) }
+    const wrappedReject = (e) => { cleanup(); _origReject(e) }
+    // 重定向分支内部调用 _fetchWithElectronNet 递归, 其自带硬定时器, 这里只清当前层
+    const prevResolve = resolve
+    resolve = wrappedResolve
+    reject = wrappedReject
+
     request.end()
   })
+  // 注意: hardTimer 是 Promise 构造函数内部的 const, 此处的 .catch 回调不在其词法作用域内,
+  // 访问 hardTimer 会 ReferenceError。所有 resolve/reject 路径(含 wrappedReject/timeoutTimer/
+  // bodyTimer/request error)内部都已 clearTimeout(hardTimer), 这里无需再清, 仅透传错误。
+  .catch((e) => { throw e })
 }
 
 // ========== 漫画源类 ==========
+
+// 注: 旧的 buildSmtt6ImageUrlVariants / CDN_HOST_CANDIDATES_SMTT6 已删除。
+// smtt6 图片已迁移到 18rouman.vip 域名(Cloudflare CDN), 旧的 p5.smtt6.com 等子域名 DNS 全部失效。
+// 变体生成由 downloadPaths.js 的 generateImageUrlVariants 通用函数处理(不限于 smtt6 域名)。
+
 class Smtt6Source extends ComicSource {
   get id() { return 'smtt6' }
   get name() { return 'SM动漫' }
@@ -270,7 +330,10 @@ class Smtt6Source extends ComicSource {
           throw new Error('cancelled')
         }
         try {
-          if (i > 0 || requestQueue.running > 0) {
+          // 注意: 仅在重试(i>0)时退避. 原代码 `i>0 || requestQueue.running>0` 会在并发>1 时
+          // 对每个并发请求都额外 sleep 一次(requestQueue._process 内部 finally 已 sleep 过),
+          // 形成双重限速, 抵消并发提升. 去掉 running>0 条件即可让并发真正生效.
+          if (i > 0) {
             const waitTime = calculateWaitTime()
             console.log(`[SmartCrawl] 等待 ${(waitTime / 1000).toFixed(1)}s 后请求...`)
             await _sleepWithCancel(waitTime, cancelledFn, `等待期间被取消: ${url}`)
@@ -284,7 +347,7 @@ class Smtt6Source extends ComicSource {
           if (cancelledFn && (e.message === 'cancelled' || cancelledFn())) throw e
           const msg = e.message || ''
           console.warn(`[SmartCrawl] 尝试 ${i + 1}/${RETRY_TIMES} 失败: ${msg} (${url})`)
-          recordError()
+          recordErrorIfNetwork(msg)
 
           if (i === RETRY_TIMES - 1) throw e
 
@@ -436,6 +499,12 @@ class Smtt6Source extends ComicSource {
   }
 
   async getDetail(url, cancelledFn = null) {
+    // Bug #48 修复: 脏数据 comic.sourceUrl 可能为 null/空, 直接传进来会到 new URL(null)
+    // 抛 'Invalid URL (null)', 且会触发 recordError 把全局自适应延迟顶满, 拖垮并发.
+    // 这里早退, 抛明确错误交由上层(syncService)跳过该漫画.
+    if (!url || typeof url !== 'string' || !/^https?:/.test(url)) {
+      throw new Error('空或不合法 URL (skip)')
+    }
     const html = await this._fetch(url, this.baseUrl + '/', cancelledFn)
     const $ = cheerio.load(html)
     const result = {
@@ -671,37 +740,45 @@ class Smtt6Source extends ComicSource {
   }
 }
 
-// ========== 图片下载（Node.js https，绕过 Electron referrer 检查） ==========
-function _downloadImage(imageUrl, referer) {
+// ========== 图片下载（Electron net，与浏览器 DNS 解析一致） ==========
+function _downloadImage(imageUrl, referer, redirectCount = 0) {
   return new Promise((resolve, reject) => {
     const fp = generateRequestFingerprint()
-    const parsed = new URL(imageUrl)
-    const lib = parsed.protocol === 'https:' ? https : http
 
-    const options = {
-      hostname: parsed.hostname,
-      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
-      path: parsed.pathname + parsed.search,
+    // 使用 Electron net 模块 (Chromium 网络栈), 避免 Node.js getaddrinfo ENOTFOUND
+    // Bug #45 修复: 用 referrer 选项替代 setHeader('Referer', ...), 避免跨域 referrer 被 Chromium 拦截
+    const request = net.request({
       method: 'GET',
-      headers: {
-        'User-Agent': fp.ua,
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Accept-Language': fp.acceptLanguage,
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'no-cache',
-        'Referer': referer || '',
-      },
-      rejectUnauthorized: false,
-    }
+      url: imageUrl,
+      redirect: 'manual',
+      referrer: referer || '',
+    })
+    request.setHeader('User-Agent', fp.ua)
+    request.setHeader('Accept', 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8')
+    request.setHeader('Accept-Language', fp.acceptLanguage)
+    request.setHeader('Accept-Encoding', 'gzip, deflate, br')
+    request.setHeader('Cache-Control', 'no-cache')
 
-    const req = lib.request(options, (res) => {
+    let timeoutTimer = setTimeout(() => {
+      try { request.abort() } catch (_) {}
+      reject(new Error('Request timeout'))
+    }, 30000)
+
+    request.on('response', (res) => {
       if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
+        clearTimeout(timeoutTimer)
+        try { request.abort() } catch (_) {}
         res.resume()
+        if (redirectCount + 1 > MAX_REDIRECTS) {
+          return reject(new Error('Too many redirects'))
+        }
         const nextUrl = res.headers.location.startsWith('http') ? res.headers.location : new URL(res.headers.location, imageUrl).href
-        return _downloadImage(nextUrl, referer).then(resolve, reject)
+        return _downloadImage(nextUrl, referer, redirectCount + 1).then(resolve, reject)
       }
       if (res.statusCode !== 200) {
+        clearTimeout(timeoutTimer)
         res.resume()
+        try { request.abort() } catch (_) {}
         return reject(new Error('HTTP ' + res.statusCode))
       }
 
@@ -713,16 +790,23 @@ function _downloadImage(imageUrl, referer) {
 
       stream.on('data', (chunk) => chunks.push(chunk))
       stream.on('end', () => {
+        clearTimeout(timeoutTimer)
         const buf = Buffer.concat(chunks)
         if (buf.length === 0) return reject(new Error('Empty response'))
         resolve(buf)
       })
-      stream.on('error', reject)
+      stream.on('error', (e) => {
+        clearTimeout(timeoutTimer)
+        reject(e)
+      })
     })
 
-    req.on('error', reject)
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Request timeout')) })
-    req.end()
+    request.on('error', (e) => {
+      clearTimeout(timeoutTimer)
+      reject(e)
+    })
+
+    request.end()
   })
 }
 

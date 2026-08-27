@@ -21,8 +21,11 @@ function sanitizeFilename(n) {
 
 function normalizeName(s) {
   if (!s) return ''
-  return String(s)
-    .trim()
+  let t = String(s).trim()
+  // Bug #42 修复: 去掉常见目录去重后缀 ( Finder: " 2" / "(2)" / "（2）"  ;  resolveUniqueComicDir: "_1" / "-2")
+  t = t.replace(/[\s_\-（(]\s*\d+\s*[)）]?\s*$/g, ' ')
+  t = t.replace(/[\s_\-]\s*\d+\s*$/g, ' ')
+  return t
     .replace(/[^\u4E00-\u9FFF\u3400-\u4DBF\u3040-\u30FF\uAC00-\uD7AFa-zA-Z0-9]+/g, '')
     .toLowerCase()
 }

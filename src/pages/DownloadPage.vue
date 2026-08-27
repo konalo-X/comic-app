@@ -13,8 +13,8 @@
 
     <!-- Tab 切换 -->
     <div class="download-tabs">
-      <button 
-        :class="['tab-item', { active: activeTab === 'queue' }]" 
+      <button
+        :class="['tab-item', { active: activeTab === 'queue' }]"
         @click="activeTab = 'queue'"
       >
         <svg class="tab-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -25,8 +25,8 @@
         <span class="tab-label">下载队列</span>
         <span v-if="downloading.length > 0" class="tab-badge">{{ downloading.length }}</span>
       </button>
-      <button 
-        :class="['tab-item', { active: activeTab === 'history' }]" 
+      <button
+        :class="['tab-item', { active: activeTab === 'history' }]"
         @click="activeTab = 'history'"
       >
         <svg class="tab-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -36,8 +36,8 @@
         <span class="tab-label">下载历史</span>
         <span v-if="downloadGroups.length > 0" class="tab-badge">{{ downloadGroups.length }}</span>
       </button>
-      <button 
-        :class="['tab-item', { active: activeTab === 'health' }]" 
+      <button
+        :class="['tab-item', { active: activeTab === 'health' }]"
         @click="activeTab = 'health'"
       >
         <svg class="tab-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -57,9 +57,10 @@
         </div>
         <div class="row gap-8">
           <button class="btn btn-ghost btn-sm" @click="debugJobs">🔍 调试</button>
-          <button class="btn btn-ghost btn-sm" @click="cleanupDuplicates">🧹 清理重复</button>
-          <button class="btn btn-secondary btn-sm" @click="pauseAll">⏸ 全部暂停</button>
-          <button class="btn btn-primary btn-sm" @click="startAll">▶ 全部开始</button>
+          <button class="btn btn-ghost btn-sm" :disabled="batchLoading" @click="cleanupDuplicates">{{ batchLoading ? '⏳ 处理中...' : '🧹 清理重复' }}</button>
+          <button class="btn btn-secondary btn-sm" :disabled="batchLoading" @click="pauseAll">⏸ 全部暂停</button>
+          <button class="btn btn-primary btn-sm" :disabled="batchLoading" @click="startAll">▶ 全部开始</button>
+          <button class="btn btn-danger btn-sm" :disabled="batchLoading" @click="removeAllDownloadTasks">🗑 清除全部</button>
         </div>
       </div>
 
@@ -88,15 +89,16 @@
                 <div class="task-title">{{ t.chapter }}</div>
                 <div class="row gap-8 mt-4">
                   <span class="text-sub task-meta" v-if="t._hasProgress && t.total">{{ t.done }} / {{ t.total }} {{ t._unit || '页' }}</span>
+                  <span class="text-sub task-meta" v-else-if="t._connecting">连接源站中...</span>
                   <span class="text-sub task-meta" v-else-if="t.status === 'downloading'">下载中...</span>
                   <span class="text-sub task-meta" v-else>{{ t.statusText }}</span>
                   <span v-if="t.speed" class="text-sub task-meta">{{ t.speed }}</span>
                 </div>
               </div>
               <div class="progress-bar task-progress">
-                <div class="fill download" :style="{ width: (t._hasProgress && t.total ? pct(t) : 0) + '%' }"></div>
+                <div class="fill download" :class="{ connecting: t._connecting }" :style="{ width: (t._hasProgress && t.total ? pct(t) : (t._connecting ? '100%' : 0)) + '%' }"></div>
               </div>
-              <span class="task-status">{{ t._hasProgress && t.total ? pct(t) : 0 }}%</span>
+              <span class="task-status">{{ t._hasProgress && t.total ? pct(t) : (t._connecting ? '~' : 0) }}%</span>
               <span :class="['task-status-text', statusCls(t)]">{{ t.statusText }}</span>
               <div class="row gap-4 task-actions">
                 <button v-if="t.status === 'downloading'" class="btn btn-secondary btn-sm" @click="pauseTask(t)">暂停</button>
@@ -124,13 +126,13 @@
             <h2>❌ 失败任务</h2>
             <span class="tag tag-danger">{{ failedJobs.length }} 个失败</span>
           </div>
-          <button class="btn btn-primary btn-sm" @click="retryAllFailed">🔄 全部重试</button>
+          <button class="btn btn-primary btn-sm" :disabled="batchLoading" @click="retryAllFailed">{{ batchLoading ? '⏳ 处理中...' : '🔄 全部重试' }}</button>
         </div>
         <div class="card failed-job-card" v-for="fj in failedJobs" :key="fj.id">
           <div class="row between">
             <div>
               <div class="task-title">{{ fj.comic }} · {{ fj.chapter }}</div>
-              <div class="text-danger" style="font-size: 12px; margin-top: 4px;">错误：{{ fj.error }}</div>
+              <div class="text-danger" style="font-size: 12px; margin-top: 4px;">错误:{{ fj.error }}</div>
             </div>
             <div class="row gap-4">
               <button class="btn btn-primary btn-sm" @click="retryFailed(fj)">重试</button>
@@ -173,10 +175,10 @@
         </div>
 
         <div class="text-sub" style="font-size: 11px;">
-          最后下载：{{ group.latestDate }} · 共 {{ group.chapters }} 章 / {{ group.imagesCount }} 张图片
+          最后下载:{{ group.latestDate }} · 共 {{ group.chapters }} 章 / {{ group.imagesCount }} 张图片
         </div>
 
-        <div v-if="exporting === group.title" class="mt-8 text-accent" style="font-size: 12px;">
+        <div v-if="exporting.has(group.title)" class="mt-8 text-accent" style="font-size: 12px;">
           正在导出 {{ group.title }}.{{ formatExport }}
         </div>
       </div>
@@ -197,8 +199,8 @@
           <button class="btn btn-ghost btn-sm" :disabled="healthScanning" @click="scanHealth(true)">
             {{ healthScanning ? '扫描中...' : '🔬 深度扫描' }}
           </button>
-          <button class="btn btn-primary btn-sm" :disabled="healthScanning || healthIssues.length === 0" @click="repairAll">
-            🔧 修复全部
+          <button class="btn btn-primary btn-sm" :disabled="healthScanning || batchLoading || healthIssues.length === 0" @click="repairAll">
+            {{ batchLoading ? '⏳ 修复中...' : '🔧 修复全部' }}
           </button>
         </div>
       </div>
@@ -215,7 +217,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
         </div>
         <div class="empty-title">点击扫描检查漫画完整性</div>
-        <div class="empty-desc">快速扫描检测损坏和缺失文件，深度扫描额外比对在线图片数</div>
+        <div class="empty-desc">快速扫描检测损坏和缺失文件,深度扫描额外比对在线图片数</div>
       </div>
 
       <div v-if="!healthScanning && healthScanDone && healthIssues.length === 0" class="empty-state">
@@ -333,7 +335,7 @@ const taskGroups = computed(() => {
     const queuedCount = queuedTasks.length
     const pausedCount = pausedTasks.length
     const doneCount = doneTasks.length
-    // 对 downloadComic 任务统计其章节数 (total)，对 downloadChapter 任务统计 1 章
+    // 对 downloadComic 任务统计其章节数 (total),对 downloadChapter 任务统计 1 章
     const sumChapters = (list) => list.reduce((sum, t) => sum + (t._unit === '章' ? (t.total || 0) : 1), 0)
     const chapterCount = sumChapters(items)
     const waitingChapterCount = sumChapters([...queuedTasks, ...pausedTasks])
@@ -380,12 +382,29 @@ function removeGroup(g) {
   if (!confirm(`确定移除「${g.comic}」的 ${g.items.length} 个下载任务 (${g.count} 章)?`)) return
   for (const t of [...g.items]) removeTask(t)
 }
+async function removeAllDownloadTasks() {
+  if (batchLoading.value) return
+  if (!confirm(`确定清除全部 ${tasks.value.length} 个下载任务?(已下载的本地文件不会被删除)`)) return
+  batchLoading.value = true
+  try {
+    const count = await window.jobApi?.removeAllDownloads()
+    tasks.value = []
+    window.dispatchEvent(new CustomEvent('toast', { detail: `已清除 ${count ?? tasks.value.length} 个下载任务` }))
+  } catch (e) {
+    console.error('[清除全部] 失败:', e)
+    window.dispatchEvent(new CustomEvent('toast', { detail: `清除失败: ${e.message}` }))
+  } finally {
+    batchLoading.value = false
+  }
+}
 
 const healthIssues = ref([])
 const healthScanning = ref(false)
 const healthScanDone = ref(false)
 const repairJobs = ref([])
 const failedJobs = ref([])
+// 批量操作 loading 状态,防止重复点击
+const batchLoading = ref(false)
 
 function issueTagClass(type) {
   const map = { corrupt: 'tag-danger', empty_file: 'tag-danger', empty: 'tag-danger', gap: 'tag-warning', incomplete: 'tag-warning' }
@@ -439,6 +458,8 @@ async function repairOne(issue) {
 }
 
 async function repairAll() {
+  if (batchLoading.value) return
+  batchLoading.value = true
   try {
     const result = await window.offlineApi?.repairAll?.({ deepCheck: false })
     if (result?.success) {
@@ -449,6 +470,8 @@ async function repairAll() {
     }
   } catch (e) {
     window.dispatchEvent(new CustomEvent('toast', { detail: `修复失败: ${e.message}` }))
+  } finally {
+    batchLoading.value = false
   }
 }
 
@@ -466,6 +489,7 @@ async function pauseAll() {
         t.statusText = '暂停中'
       } catch (e) {
         console.error('[暂停] 失败:', t.jobId, e)
+        window.dispatchEvent(new CustomEvent('toast', { detail: `暂停失败: ${e.message}` }))
       }
     }
   }
@@ -482,6 +506,7 @@ async function startAll() {
         t.statusText = '下载中'
       } catch (e) {
         console.error('[恢复] 失败:', t.jobId, e)
+        window.dispatchEvent(new CustomEvent('toast', { detail: `恢复失败: ${e.message}` }))
       }
     }
   }
@@ -497,6 +522,7 @@ async function pauseTask(task) {
       task.statusText = '暂停中'
     } catch (e) {
       console.error('[暂停] 失败:', task.jobId, e)
+      window.dispatchEvent(new CustomEvent('toast', { detail: `暂停失败: ${e.message}` }))
     }
   }
 }
@@ -511,6 +537,7 @@ async function resumeTask(task) {
       task.statusText = '下载中'
     } catch (e) {
       console.error('[恢复] 失败:', task.jobId, e)
+      window.dispatchEvent(new CustomEvent('toast', { detail: `恢复失败: ${e.message}` }))
     }
   }
 }
@@ -518,10 +545,10 @@ async function resumeTask(task) {
 async function removeTask(task) {
   try {
     if (task.jobId && window.jobApi) {
-      await window.jobApi.cancel(task.jobId)
+      await window.jobApi.remove(task.jobId)
     }
   } catch (e) {
-    console.error('[移除] 取消失败:', task.jobId, e)
+    console.error('[移除] 删除失败:', task.jobId, e)
   }
   tasks.value = tasks.value.filter(t => t.id !== task.id)
 }
@@ -531,7 +558,7 @@ async function retryFailed(job) {
     await window.jobApi?.retry?.(job.jobId)
     failedJobs.value = failedJobs.value.filter(j => j.id !== job.id)
     loadJobs()
-    window.dispatchEvent(new CustomEvent('toast', { detail: `已重试：${job.comic}` }))
+    window.dispatchEvent(new CustomEvent('toast', { detail: `已重试:${job.comic}` }))
   } catch (e) {
     console.error('[重试] 失败:', job.jobId, e)
     window.dispatchEvent(new CustomEvent('toast', { detail: `重试失败: ${e.message}` }))
@@ -539,6 +566,8 @@ async function retryFailed(job) {
 }
 
 async function retryAllFailed() {
+  if (batchLoading.value) return
+  batchLoading.value = true
   try {
     await window.jobApi?.retryAll?.()
     failedJobs.value = []
@@ -547,6 +576,8 @@ async function retryAllFailed() {
   } catch (e) {
     console.error('[全部重试] 失败:', e)
     window.dispatchEvent(new CustomEvent('toast', { detail: `重试失败: ${e.message}` }))
+  } finally {
+    batchLoading.value = false
   }
 }
 
@@ -567,7 +598,7 @@ function openFolder(path) {
 }
 
 const downloadGroups = ref([])
-const exporting = ref('')
+const exporting = ref(new Set())
 const formatExport = ref('epub')
 
 let cleanupProgress = null
@@ -580,7 +611,7 @@ onMounted(async () => {
   await loadJobs()
   await loadFailedJobs()
 
-  // 事件驱动刷新：任务队列变化时即时刷新
+  // 事件驱动刷新:任务队列变化时即时刷新
   if (window.jobApi?.onQueueChanged) {
     cleanupQueueChanged = window.jobApi.onQueueChanged(() => {
       if (activeTab.value === 'queue') {
@@ -590,7 +621,7 @@ onMounted(async () => {
     })
   }
 
-  // 兜底轮询：每 30 秒刷新一次，防止事件丢失
+  // 兜底轮询:每 30 秒刷新一次,防止事件丢失
   refreshTimer = setInterval(() => {
     if (activeTab.value === 'queue') {
       loadJobs()
@@ -602,6 +633,15 @@ onMounted(async () => {
     cleanupProgress = window.offlineApi.onJobProgress((data) => {
       const task = tasks.value.find(t => t.jobId === data.jobId)
       if (task) {
+        if (data.phase === 'fetching') {
+          // 进入抓取/连接源站阶段:total 尚为 0,标记为连接中,避免显示 0% 假死
+          task._connecting = true
+          task._hasProgress = false
+          task.status = 'downloading'
+          task.statusText = data.statusText || '连接源站中...'
+          return
+        }
+        task._connecting = false
         if (data.totalChapters != null) {
           task.done = data.chapter || 0
           task.total = data.totalChapters
@@ -693,7 +733,7 @@ function getChapterDisplayName(payload, isComic) {
 
 async function loadJobs() {
   try {
-    // 查询所有活跃状态的任务（waiting + running + paused）
+    // 查询所有活跃状态的任务(waiting + running + paused)
     const jobs = await window.jobApi?.list('active', 500) || []
     // 只显示下载相关的任务
     const downloadJobs = jobs.filter(j =>
@@ -710,10 +750,16 @@ async function loadJobs() {
         status = 'paused'
         statusText = '暂停中'
       }
-      // 判断是否真的有进度数据
-      const hasProgress = j.progress != null && (j.progress.total != null || j.progress.current != null || j.progress.downloaded != null)
+      // 判断是否真的有进度数据（注意：total:0 不算有进度，否则会误判为 0% 而非连接中）
+      const phase = j.progress?.phase
+      const hasProgress = phase === 'fetching'
+        ? false
+        : (j.progress != null && ((j.progress.total != null && j.progress.total > 0) || j.progress.current != null || j.progress.downloaded != null))
       const hasDbProgress = j.progressTotal > 0 || j.progressCurrent > 0
       const hasAnyProgress = hasProgress || hasDbProgress
+      // 任务在跑但尚无总进度（卡在连接源站/获取列表阶段，或后端已上报 phase:'fetching'）：
+      // 标记为“连接中”，不要显示 0% 假死
+      const isConnecting = phase === 'fetching' || ((j.status === 'active' || j.status === 'running') && !hasAnyProgress)
 
       let done, total
       if (isComic) {
@@ -733,8 +779,9 @@ async function loadJobs() {
         total,
         _unit: isComic ? '章' : '页',
         _hasProgress: hasAnyProgress,
+        _connecting: isConnecting,
         status,
-        statusText
+        statusText: isConnecting ? '连接源站中...' : statusText
       }
     })
   } catch (e) {
@@ -783,7 +830,8 @@ async function loadRecords() {
 }
 
 async function exportComic(title, format) {
-  exporting.value = title
+  if (exporting.value.has(title)) return
+  exporting.value.add(title)
   formatExport.value = format
   try {
     const out = await window.offlineApi.exportComic(title, format)
@@ -793,7 +841,7 @@ async function exportComic(title, format) {
   } catch (e) {
     window.dispatchEvent(new CustomEvent('toast', { detail: `导出失败: ${e.message}` }))
   } finally {
-    exporting.value = ''
+    exporting.value.delete(title)
   }
 }
 
@@ -801,13 +849,15 @@ async function debugJobs() {
   try {
     const details = await window.jobApi?.getJobDetails?.()
     console.log('[调试] 任务详情:', details)
-    alert('任务详情已输出到 Console，请按 Cmd+Option+I 查看')
+    alert('任务详情已输出到 Console,请按 Cmd+Option+I 查看')
   } catch (e) {
     console.error('[调试] 获取失败:', e)
   }
 }
 
 async function cleanupDuplicates() {
+  if (batchLoading.value) return
+  batchLoading.value = true
   try {
     const results = []
     const r1 = await window.jobApi?.cleanupDuplicateSyncs?.()
@@ -818,6 +868,8 @@ async function cleanupDuplicates() {
   } catch (e) {
     console.error('[清理] 失败:', e)
     alert('清理失败: ' + e.message)
+  } finally {
+    batchLoading.value = false
   }
 }
 </script>
@@ -835,7 +887,7 @@ async function cleanupDuplicates() {
   padding: 6px;
   border-radius: var(--radius-lg);
   border: 1px solid rgba(255,255,255,0.76);
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(8px);
 }
 
 .queue-card {
@@ -895,7 +947,7 @@ async function cleanupDuplicates() {
   border: 1px solid rgba(255,255,255,0.76);
   margin-bottom: 12px;
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(6px);
 }
 .task-row:last-child { margin-bottom: 0; }
 .task-info { flex: 1; min-width: 0; }
@@ -904,6 +956,24 @@ async function cleanupDuplicates() {
 .task-progress { max-width: 220px; flex: 1; height: 8px; }
 .task-progress .fill {
   border-radius: 999px;
+}
+/* 连接源站中:不确定进度动画(左右扫光),区别于真 0% 卡死 */
+.task-progress .fill.connecting {
+  background-image: linear-gradient(
+    90deg,
+    rgba(255,255,255,0) 0%,
+    rgba(255,255,255,0.55) 50%,
+    rgba(255,255,255,0) 100%
+  );
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  background-color: var(--accent, #4f8cff);
+  animation: connecting-sweep 1.2s ease-in-out infinite;
+  opacity: 0.9;
+}
+@keyframes connecting-sweep {
+  0% { background-position: -40% 0; }
+  100% { background-position: 140% 0; }
 }
 .task-status {
   min-width: 52px;
@@ -929,7 +999,7 @@ async function cleanupDuplicates() {
   border: 1px solid rgba(255,255,255,0.75);
   box-shadow: var(--shadow-sm);
   background: rgba(255,255,255,0.88);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(6px);
 }
 .download-history .card:hover {
   transform: translateY(-2px);
@@ -1062,7 +1132,7 @@ async function cleanupDuplicates() {
   border: 1px solid rgba(255,255,255,0.75);
   box-shadow: var(--shadow-sm);
   background: rgba(255,255,255,0.88);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(6px);
   margin-bottom: 16px;
 }
 .health-issue-card:hover {
@@ -1143,7 +1213,7 @@ async function cleanupDuplicates() {
   border-radius: var(--radius-lg);
   border: 1px solid rgba(239, 68, 68, 0.2);
   background: rgba(255, 255, 255, 0.88);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(6px);
   margin-bottom: 12px;
   box-shadow: var(--shadow-sm);
 }

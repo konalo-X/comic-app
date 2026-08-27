@@ -161,5 +161,65 @@ module.exports = {
   getComicsNeedingImageCountUpdate, getChaptersWithoutImageCount,
   isChapterNameGeneric, getComicsWithGenericChapterNames,
   getComicsNeedingChapterNameEnrichment,
-  updateChapterName, updateChapterNames, markComicChaptersEnriched
+  updateChapterName, updateChapterNames, markComicChaptersEnriched,
+  reconcileImageCounts
+}
+
+// ============ Bug 修复 (2026-08-17): image_count 以磁盘为准回填 ============
+// 背景: chapters.image_count 之前只写源站"应有图数 expected", 与磁盘实况脱节
+// (抽查 SuperDick: DB 记"第1话 28图"但磁盘 0 张, "第121话 0图"但文件夹不存在),
+// 导致: ① 无法用 image_count 判断"是否真下载"; ② getComicsNeedingImageCountUpdate
+// 把"0图"章当"待补"无限循环扫描, 浪费 sync 配额。
+// 本函数: 遍历漫画 local_path 下各章文件夹, 用真实图片文件数覆盖 image_count,
+// 让 DB 与磁盘一致。返回实际回填的章节数。
+const path = require('path')
+const fs = require('fs')
+
+async function reconcileImageCounts(comicId, localPath) {
+  const db = ensureDb()
+  if (!localPath || !fs.existsSync(localPath)) return 0
+
+  // 取该漫画所有章节 (id, name, sort_order) 用于磁盘目录匹配
+  const rows = db.prepare(
+    'SELECT id, name, sort_order FROM chapters WHERE comic_id = ? ORDER BY sort_order'
+  ).all(comicId)
+  if (rows.length === 0) return 0
+
+  // 章节磁盘目录命名形如 "12-第12话" 或 "12"，用 sort_order+1 前缀匹配
+  let dirEntries = []
+  try {
+    dirEntries = fs.readdirSync(localPath, { withFileTypes: true })
+      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+  } catch (_) {
+    return 0
+  }
+  const dirByName = new Set(dirEntries.map(e => e.name))
+
+  const IMG_RE = /\.(webp|jpg|jpeg|png|gif|avif|bmp)$/i
+  const updateStmt = db.prepare('UPDATE chapters SET image_count = ? WHERE id = ?')
+  let changed = 0
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      // 候选目录: 优先 "sort_order+1-xxx"，其次 "sort_order+1"
+      const idx = r.sort_order + 1
+      let dirName = null
+      const named = `${idx}-${r.name}`
+      if (dirByName.has(named)) dirName = named
+      else if (dirByName.has(String(idx))) dirName = String(idx)
+      else {
+        const fallback = dirEntries.find(e => e.name === String(idx) || e.name.startsWith(`${idx}-`))
+        if (fallback) dirName = fallback.name
+      }
+      if (!dirName) continue
+      const chDir = path.join(localPath, dirName)
+      let count = 0
+      try {
+        count = fs.readdirSync(chDir).filter(f => IMG_RE.test(f)).length
+      } catch (_) { count = 0 }
+      updateStmt.run(count, r.id)
+      changed++
+    }
+  })
+  tx()
+  return changed
 }

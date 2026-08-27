@@ -8,6 +8,7 @@ const {
   findComicDir,
   resolveUniqueComicDir,
   getPrimaryDownloadRoot,
+  existsAsync,
   findChapterDir,
   getValidChapterImages,
   loadChapterState,
@@ -22,13 +23,13 @@ const db = require('../db')
 // ============ 下载管理器（保留原有兼容） ============
 class DownloadManager {
   getStatePath(comicDir) { return path.join(comicDir, '.download_state.json') }
-  loadState(comicDir, title) {
+  async loadState(comicDir, title) {
     const p = this.getStatePath(comicDir)
-    try { if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8')) } catch {}
+    try { if (await existsAsync(p)) return JSON.parse(await fs.promises.readFile(p, 'utf8')) } catch {}
     return null
   }
-  saveState(comicDir, title, state) {
-    try { fs.writeFileSync(this.getStatePath(comicDir), JSON.stringify(state, null, 2)) } catch {}
+  async saveState(comicDir, title, state) {
+    try { await fs.promises.writeFile(this.getStatePath(comicDir), JSON.stringify(state, null, 2)) } catch {}
   }
 
   async downloadComic(comicData, win) {
@@ -36,21 +37,21 @@ class DownloadManager {
     if (!chapters?.length) return { success: false, error: '暂无章节' }
 
     // 优先复用现有目录，否则落到主路径
-    let comicDir = findComicDir(title, sourceUrl)
+    let comicDir = await findComicDir(title, sourceUrl)
     if (!comicDir) {
       const preferred = path.join(getPrimaryDownloadRoot(), sanitize(title))
-      comicDir = resolveUniqueComicDir(preferred, sourceUrl)
+      comicDir = await resolveUniqueComicDir(preferred, sourceUrl)
     }
     // 安全检查：如果磁盘未挂载，不要创建本地目录
     const downloadRoot = getPrimaryDownloadRoot()
-    if (downloadRoot.startsWith('/Volumes/') && !fs.existsSync(downloadRoot)) {
+    if (downloadRoot.startsWith('/Volumes/') && !(await existsAsync(downloadRoot))) {
       throw new Error(`下载磁盘未挂载: ${downloadRoot}\n请先连接外部磁盘后再下载`)
     }
-    const state = this.loadState(comicDir, title) || {
+    const state = await this.loadState(comicDir, title) || {
       comicId: sourceUrl, title, totalChapters: chapters.length,
       completedChapters: [], completedImages: 0, startTime: Date.now()
     }
-    if (!fs.existsSync(comicDir)) fs.mkdirSync(comicDir, { recursive: true })
+    if (!(await existsAsync(comicDir))) await fs.promises.mkdir(comicDir, { recursive: true })
 
     const src = sources.default
     let successImages = state.completedImages, failedChapters = 0
@@ -61,9 +62,17 @@ class DownloadManager {
 
     if (cover && !state.completedChapters.includes(-1)) {
       const cp = path.join(comicDir, 'cover.webp')
-      if (!fs.existsSync(cp)) try { await downloadAndConvert(cover, cp, referer) } catch {}
-      state.completedChapters.push(-1)
-      this.saveState(comicDir, title, state)
+      let coverOk = false
+      if (!(await existsAsync(cp))) {
+        try { await downloadAndConvert(cover, cp, referer); coverOk = true } catch (e) {
+          console.warn(`[下载] 封面下载失败: ${e.message}`)
+        }
+      } else { coverOk = true }
+      // Bug #13 修复: 只有封面下载成功(或已存在)才标记完成,失败不 push(-1) 以便下次重试
+      if (coverOk) {
+        state.completedChapters.push(-1)
+        await this.saveState(comicDir, title, state)
+      }
     }
 
     const usedDirs = new Set()
@@ -73,16 +82,16 @@ class DownloadManager {
 
       // 扫描磁盘：章节是否已存在（带全局去重，避免同一目录被多个章节匹配）
       // 使用有效图片检测，过滤损坏文件
-      const chDirOnDisk = findChapterDir(comicDir, i, ch.name, usedDirs)
+      const chDirOnDisk = await findChapterDir(comicDir, i, ch.name, usedDirs)
       if (chDirOnDisk) {
         const validFiles = await getValidChapterImages(chDirOnDisk)
-        const allFiles = listChapterImages(chDirOnDisk)
+        const allFiles = await listChapterImages(chDirOnDisk)
         const corruptCount = allFiles.length - validFiles.length
         if (validFiles.length > 0 && corruptCount === 0) {
           successImages += validFiles.length
           state.completedChapters.push(i)
           state.completedImages = successImages
-          this.saveState(comicDir, title, state)
+          await this.saveState(comicDir, title, state)
           usedDirs.add(chDirOnDisk)
           continue
         }
@@ -98,12 +107,12 @@ class DownloadManager {
         if (!images?.length) { failedChapters++; continue }
         const folderName = `${i + 1}-${sanitize(chapterName)}`
         const chDir = path.join(comicDir, folderName)
-        if (!fs.existsSync(chDir)) fs.mkdirSync(chDir, { recursive: true })
+        if (!(await existsAsync(chDir))) await fs.promises.mkdir(chDir, { recursive: true })
         if (!state._dirs) state._dirs = {}
         state._dirs[i] = chDir
 
         // 使用断点续传状态
-        const chState = loadChapterState(chDir) || { completedIndices: [], failedImages: [] }
+        const chState = await loadChapterState(chDir) || { completedIndices: [], failedImages: [] }
         let chOk = 0
         let chFailed = 0
 
@@ -118,7 +127,7 @@ class DownloadManager {
           const outPath = path.join(chDir, f)
 
           // 如果文件已存在且有效，跳过
-          if (fs.existsSync(outPath)) {
+          if (await existsAsync(outPath)) {
             const isValid = await validateImageFile(outPath)
             if (isValid) {
               chOk++
@@ -128,7 +137,7 @@ class DownloadManager {
               continue
             }
             // 文件损坏，删除后重新下载
-            try { fs.unlinkSync(outPath) } catch (_) {}
+            try { await fs.promises.unlink(outPath) } catch (_) {}
           }
 
           try {
@@ -152,7 +161,7 @@ class DownloadManager {
 
           // 每5张保存一次状态（防止崩溃后大量重复下载）
           if (j % 5 === 0 || j === images.length - 1) {
-            saveChapterState(chDir, chState)
+            await saveChapterState(chDir, chState)
           }
         }
 
@@ -160,7 +169,7 @@ class DownloadManager {
         if (chState.completedIndices.length >= images.length) {
           try {
             const statePath = getChapterStatePath(chDir)
-            if (fs.existsSync(statePath)) fs.unlinkSync(statePath)
+            if (await existsAsync(statePath)) await fs.promises.unlink(statePath)
           } catch (_) {}
         }
 
@@ -183,7 +192,7 @@ class DownloadManager {
       }
     }
     state.completed = true; state.endTime = Date.now()
-    this.saveState(comicDir, title, state)
+    await this.saveState(comicDir, title, state)
     if (sourceUrl) {
       try { await db.updateComic(sourceUrl, { local_path: comicDir }) } catch (_) {}
     }

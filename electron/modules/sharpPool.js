@@ -53,31 +53,52 @@ class SharpPool {
     return new Promise((resolve, reject) => {
       const id = crypto.randomUUID()
       const task = { id, type, payload, resolve, reject }
-      this._pending.push(task)
 
       // 查找空闲 worker
       const idle = this.workers.find(w => !w.busy)
       if (idle) {
-        this._assign(idle, id, type, payload)
+        // 立即分配：task 不入 _pending 队列，避免被其他 worker 重复拾取
+        // （_assign 会将 task 引用存到 entry._currentTask，_onMessage 据此回溯）
+        this._assign(idle, task)
+      } else {
+        // 无空闲 worker 时入队等待，_pending 只包含「真正排队、未分配」的任务
+        this._pending.push(task)
       }
-      // 无空闲 worker 时，任务排队等待 worker 空闲后分配
     })
   }
 
   /**
    * 分配任务给指定 worker
+   * @param {{worker: Worker, busy: boolean}} entry
+   * @param {{id: string, type: string, payload: Object, resolve: Function, reject: Function}} task
    */
-  _assign(entry, id, type, payload) {
+  _assign(entry, task) {
     entry.busy = true
-    entry._currentId = id
+    entry._currentId = task.id
+    // 保存 task 引用：_onMessage/_onError 据此 resolve/reject，不再依赖 _pending 查找
+    entry._currentTask = task
 
     // buffer 类型的 payload 使用可转移对象零拷贝传递
     const transferList = []
-    const msg = { id, type, ...payload }
+    const msg = { id: task.id, type: task.type, ...task.payload }
     if (msg.buffer instanceof ArrayBuffer) {
       transferList.push(msg.buffer)
     }
     entry.worker.postMessage(msg, transferList)
+  }
+
+  /**
+   * 分配 _pending 队列中积压的任务给空闲 worker
+   * 用于 worker 空闲或重启后触发，保证 pending 任务被及时拾取
+   */
+  _dispatchPending() {
+    while (this._pending.length > 0) {
+      const idle = this.workers.find(w => !w.busy)
+      if (!idle) break
+      // shift 出队列后再 _assign 标记 busy，保证原子性：同一任务不会被多 worker 拾取
+      const task = this._pending.shift()
+      this._assign(idle, task)
+    }
   }
 
   /**
@@ -86,10 +107,11 @@ class SharpPool {
   _onMessage(entry, msg) {
     entry.busy = false
     entry._currentId = null
+    // 通过 entry._currentTask 拿到任务，避免遍历 _pending（_pending 只含排队任务）
+    const task = entry._currentTask
+    entry._currentTask = null
 
-    const idx = this._pending.findIndex(p => p.id === msg.id)
-    if (idx === -1) return
-    const task = this._pending.splice(idx, 1)[0]
+    if (!task) return
 
     if (msg.success) {
       task.resolve(msg)
@@ -97,38 +119,40 @@ class SharpPool {
       task.reject(new Error(msg.error || 'sharp 处理失败'))
     }
 
-    // 分配下一个排队任务
+    // 分配下一个排队任务：shift 出队列后再 _assign，避免重复分配
     if (this._pending.length > 0) {
-      const next = this._pending[0]
-      this._assign(entry, next.id, next.type, next.payload)
+      const next = this._pending.shift()
+      this._assign(entry, next)
     }
   }
 
   /**
    * worker 错误处理（崩溃时重启）
+   * 改为 async：worker.terminate() 是异步的，必须 await 确保旧 worker 真正终止后再创建新 worker，
+   * 否则后续代码可能在旧 worker 未终止时访问其状态
    */
-  _onError(entry, err) {
+  async _onError(entry, err) {
     console.error(`[SharpPool] worker 错误:`, err.message)
     entry.busy = false
 
-    // 失败当前任务
-    if (entry._currentId) {
-      const idx = this._pending.findIndex(p => p.id === entry._currentId)
-      if (idx !== -1) {
-        const task = this._pending.splice(idx, 1)[0]
-        task.reject(err)
-      }
-      entry._currentId = null
+    // 失败当前正在执行的任务（通过 entry._currentTask，不依赖 _pending 查找）
+    if (entry._currentTask) {
+      entry._currentTask.reject(err)
+      entry._currentTask = null
     }
+    entry._currentId = null
 
-    // 重启 worker
-    try { entry.worker.terminate() } catch (_) {}
-    if (!this._terminated) {
-      entry.worker = new Worker(WORKER_PATH)
-      entry.worker.on('message', (msg) => this._onMessage(entry, msg))
-      entry.worker.on('error', (e) => this._onError(entry, e))
-      console.log('[SharpPool] worker 已重启')
-    }
+    // 重启 worker：先 await terminate 旧 worker，确保资源释放
+    try { await entry.worker.terminate() } catch (_) {}
+    if (this._terminated) return
+
+    entry.worker = new Worker(WORKER_PATH)
+    entry.worker.on('message', (m) => this._onMessage(entry, m))
+    entry.worker.on('error', (e) => this._onError(entry, e))
+    console.log('[SharpPool] worker 已重启')
+
+    // 新 worker 启动后立即拾取 pending 队列中积压的任务，避免任务永久 pending
+    this._dispatchPending()
   }
 
   // ============ 公共 API ============
@@ -178,9 +202,27 @@ class SharpPool {
 
   /**
    * 关闭所有 worker（优雅退出）
+   * 关闭前 reject 所有未完成任务（排队 + 正在执行），避免上游 Promise 永远 pending 导致内存泄漏
    */
   async terminate() {
     this._terminated = true
+
+    const err = new Error('SharpPool terminated')
+
+    // reject 所有排队中的任务
+    while (this._pending.length > 0) {
+      const task = this._pending.shift()
+      task.reject(err)
+    }
+
+    // reject 所有正在执行的任务（worker.terminate 后不会再回消息，否则 Promise 永远 pending）
+    for (const entry of this.workers) {
+      if (entry._currentTask) {
+        entry._currentTask.reject(err)
+        entry._currentTask = null
+      }
+    }
+
     await Promise.all(this.workers.map(w => {
       try { return w.worker.terminate() } catch (_) { return Promise.resolve() }
     }))

@@ -4,10 +4,12 @@ const fs = require('fs')
 const https = require('https')
 const http = require('http')
 const url = require('url')
+const { net } = require('electron')
 const sharpPool = require('./sharpPool')
 const { app } = require('electron')
 const { sanitizeFilename: sanitize, normalizeName, sleep, getDiskInfo, normalizeUrl } = require('../utils')
 const db = require('../db')
+const dnsCache = require('./dnsCache')
 
 const INTERNAL_ROOT = path.join(app.getPath('documents'), 'comic-downloads')
 let EXTERNAL_ROOT = INTERNAL_ROOT
@@ -29,18 +31,213 @@ function setGlobalDownloadConcurrency(val) {
   globalDownloadConcurrency = val
 }
 
+// 生成图片 URL 的候选变体:很多图床在初始 HTML 里暴露的是占位 URL(错误后缀/错误 CDN 节点),
+// 真实图片需要做 .jpg/.png → .webp 后缀替换,或 p2/p3/p4/p5 ↔ p2p/p3p/p4p/p5p 的 CDN 主机切换。
+// 当下载主 URL 返回 404/403 时,尝试这些变体可以大幅提高成功率(尤其是新上传的图)。
+const CDN_HOST_SWAPS = [
+  // 先做 "普通 ↔ 带P线路" 的两两互换——这是最常见的 CDN 混淆手段
+  [/^p(\d)\./i, 'p$1p.'],
+  [/^p(\d)p\./i, 'p$1.'],
+  // 兜底:相邻编号主机轮询 (p5→p4→p3→p2→p6, p5p→p4p→p3p 等)
+]
+const CDN_ADJACENT_NUMBERS = [
+  // 数字部分 2,3,4,5,6 的环形相邻(注意 p5/p4 之间流量大,优先试)
+  { '2': ['3', '4', '5', '6'], '3': ['4', '2', '5', '6'], '4': ['5', '3', '6', '2'],
+    '5': ['4', '6', '3', '2'], '6': ['5', '4', '3', '2'] }
+][0]
+
+// =================== 子域 RST 熔断 (增强 2026-08-20) ===================
+// 墙按请求随机 reset:某个 CDN 子域(p3.18rouman.vip 等)可能连续 5 次 RST。
+// 与其在每个子域上反复撞墙(每次 30s 超时 × 重试),不如一旦某主机连续失败达到阈值,
+// 就把它熔断 N 秒(默认 30s),期间不再作为首选变体,直接跳到其它可达主机。
+const _hostBreaker = new Map() // host -> { failures, trippedUntil }
+const BREAKER_FAIL_THRESHOLD = 5 // 连续失败多少次触发熔断
+const BREAKER_COOLDOWN_MS = 30 * 1000 // 熔断时长
+const BREAKER_RESET_AFTER = 3 // 连续成功多少次解除该主机失败计数
+function _hostBreakerIsTripped(host) {
+  const b = _hostBreaker.get(host)
+  if (!b) return false
+  if (b.trippedUntil && Date.now() < b.trippedUntil) return true
+  if (b.trippedUntil && Date.now() >= b.trippedUntil) {
+    // 冷却结束,恢复并可重新尝试(清空计数)
+    _hostBreaker.delete(host)
+  }
+  return false
+}
+function _hostBreakerRecordFailure(host) {
+  if (!host) return
+  const b = _hostBreaker.get(host) || { failures: 0, successes: 0, trippedUntil: 0 }
+  b.failures++
+  b.successes = 0
+  if (b.failures >= BREAKER_FAIL_THRESHOLD) {
+    b.trippedUntil = Date.now() + BREAKER_COOLDOWN_MS
+    try { console.warn(`[熔断] CDN 主机 ${host} 连续 ${b.failures} 次失败,熔断 ${BREAKER_COOLDOWN_MS / 1000}s`) } catch {}
+  }
+  _hostBreaker.set(host, b)
+}
+function _hostBreakerRecordSuccess(host) {
+  if (!host) return
+  const b = _hostBreaker.get(host)
+  if (!b) return
+  b.successes++
+  b.failures = 0
+  if (b.successes >= BREAKER_RESET_AFTER) {
+    // 稳定恢复,彻底清除该主机熔断状态
+    _hostBreaker.delete(host)
+  } else {
+    _hostBreaker.set(host, b)
+  }
+}
+function _isNetworkFailure(msg) {
+  return /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|socket hang|连接被重置|DNS 解析失败|Request timeout|网络请求失败|5\d\d|收到空响应/i.test(msg || '')
+}
+
+function generateImageUrlVariants(origUrl) {
+  try {
+    const u = new url.URL(origUrl)
+    const origHost = u.hostname
+    const origPath = u.pathname
+    const search = u.search
+    if (!/\.(jpg|jpeg|png|webp|gif)$/i.test(origPath)) return [origUrl]
+
+    const origExt = (origPath.match(/\.(jpg|jpeg|png|webp|gif)$/i) || ['.jpg'])[0].toLowerCase()
+    // 后缀优先级:原后缀 → webp(新图首选) → jpg(旧图兜底)
+    const exts = []
+    const push = e => { if (!exts.includes(e)) exts.push(e) }
+    push(origExt); push('.webp')
+    if (origExt !== '.jpg') push('.jpg')
+
+    // 主机候选:原主机 → 基础 swap (普通↔带P) → 相邻编号主机
+    const hosts = [origHost]
+    const pushHost = h => { if (!hosts.includes(h)) hosts.push(h) }
+
+    for (const [rx, repl] of CDN_HOST_SWAPS) {
+      if (rx.test(origHost)) pushHost(origHost.replace(rx, repl))
+    }
+    const numMatch = origHost.match(/^p(\d+)(p?)\./i)
+    if (numMatch) {
+      const origNum = numMatch[1]
+      const hasP = !!numMatch[2]
+      const adjNums = CDN_ADJACENT_NUMBERS[origNum] || []
+      for (const n of adjNums) {
+        const stem = origHost.replace(/^p\d+p?\./i, '')
+        pushHost(`p${n}${hasP ? 'p' : ''}.${stem}`)
+        pushHost(`p${n}${hasP ? '' : 'p'}.${stem}`)
+      }
+    }
+
+    // [优化 2026-08-08] 18rouman.vip 的 pN. 主域在部分网络被 TCP 重置(直连 000),
+    // 但其 pNp. 子域可达。把可达子域提到 hosts 最前, 让第一梯队优先试可达主机。
+    const reachHost = (() => {
+      const m = /^p(\d+)\.(18rouman\.vip)$/i.exec(origHost)
+      if (m) {
+        const cand = `p${m[1]}p.${m[2]}`
+        if (!hosts.includes(cand)) pushHost(cand)
+        return cand
+      }
+      return null
+    })()
+    if (reachHost && hosts.includes(reachHost)) {
+      hosts.splice(hosts.indexOf(reachHost), 1)
+      hosts.unshift(reachHost)
+    }
+    // [增强 2026-08-20] 熔断:把当前处于熔断期的主机排到队尾,优先试其它可达主机。
+    const reachable = hosts.filter(h => !_hostBreakerIsTripped(h))
+    const tripped = hosts.filter(h => _hostBreakerIsTripped(h))
+    const orderedHosts = reachable.concat(tripped)
+    const primaryHost = orderedHosts[0]
+
+    const out = []
+    const seen = new Set()
+    const pushV = v => { if (!seen.has(v)) { seen.add(v); out.push(v) } }
+
+    // 第一梯队:可达主机(优先) + 所有后缀变体; 原主机作为第二梯队回退
+    pushV(`${u.protocol}//${primaryHost}${origPath}${search}`)
+    for (let ei = 1; ei < exts.length; ei++) {
+      const newPath = origPath.replace(/\.(jpg|jpeg|png|webp|gif)$/i, exts[ei])
+      pushV(`${u.protocol}//${primaryHost}${newPath}${search}`)
+    }
+    // 第二梯队:主机变体(先 swap 基础,再相邻编号) × [原后缀, webp]
+    // 用 orderedHosts 保证熔断主机排到最后(优先试可达主机)
+    for (let hi = 1; hi < orderedHosts.length; hi++) {
+      const host = orderedHosts[hi]
+      const useExts = exts.slice(0, 2) // 切主机只试 2 个后缀
+      for (const ext of useExts) {
+        const newPath = origPath.replace(/\.(jpg|jpeg|png|webp|gif)$/i, ext)
+        pushV(`${u.protocol}//${host}${newPath}${search}`)
+      }
+    }
+    return out.length ? out : [origUrl]
+  } catch (e) {
+    return [origUrl]
+  }
+}
+
+// 对 downloadBuf 的包装:当主 URL 返回 404/403 时,自动尝试 generateImageUrlVariants() 生成的变体。
+// 只对 404/403 这种"明确不存在/无权限"的错误使用变体;对 429/5xx/网络错误沿用原重试机制(退避再试同一个)。
+async function downloadBufWithVariantFallback(imageUrl, referer, timeoutMs = 30000) {
+  const variants = generateImageUrlVariants(imageUrl)
+  const lastErrors = []
+  for (let i = 0; i < variants.length; i++) {
+    const v = variants[i]
+    try {
+      const result = await downloadBuf(v, referer, timeoutMs)
+      if (i > 0) {
+        try { console.log(`[下载] 变体成功: 原URL返回失败, 变体 ${i}/${variants.length-1} ${v.substring(Math.max(0,v.length-70))} OK`) } catch {}
+      }
+      return result
+    } catch (e) {
+      const msg = (e && e.message) || String(e)
+      // 原来只把 404/403 视为"确定找不到"才切变体; 现在把连接层错误也纳入:
+      // 18rouman.vip 主域被墙表现为 TCP reset / 超时 / 网络失败(非 404),
+      // 这类错误切到 pNp 可达子域即可成功, 不应在同一种子上反复重试。
+      const isVariantable = /HTTP 404|HTTP 403|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|Request timeout|网络请求失败|socket hang|连接被重置|DNS 解析失败/i.test(msg)
+      lastErrors.push(`${v.substring(Math.max(0,v.length-70))} → ${msg}`)
+      // 只有 404/403 这种"确定找不到"才切下一个变体;其他错误让上层重试机制处理
+      if (!isVariantable) throw e
+      // 变体也不要无限试,试到上限就抛出聚合错误
+      if (i === variants.length - 1) {
+        const allMsgs = lastErrors.slice(0, 6).join(' ; ')
+        throw new Error(`${msg} (已尝试 ${variants.length} 个 URL 变体均失败: ${allMsgs})`)
+      }
+    }
+  }
+  throw new Error(`下载失败: 无可用 URL 变体 (${variants.length} 个)`)
+}
+
+// 主线程异步判存在助手: 避免热路径(可移动磁盘)同步 fs.existsSync 卡死主线程导致 abort。
+async function existsAsync(p) {
+  try { await fs.promises.stat(p); return true } catch (_) { return false }
+}
+
 function getDownloadRoots() {
   const candidates = []
   candidates.push(INTERNAL_ROOT)
-  if (EXTERNAL_ROOT !== INTERNAL_ROOT && fs.existsSync(EXTERNAL_ROOT)) {
+  // 关键修复: 之前每次都同步 fs.existsSync(EXTERNAL_ROOT) 走网络盘(AFP/SMB),
+  // 而 findComicDir/findChapterDir 在 sync 热路径每章都会调 getDownloadRoots,
+  // 几百本×每本几十章 = 几万次同步网络 syscall -> 主线程卡死 (sync 永久 active).
+  // 改为缓存盘挂载状态(30s TTL), 最多每 30s 才发一次同步 existsSync, 完全可接受.
+  if (EXTERNAL_ROOT !== INTERNAL_ROOT && externalRootAvailable()) {
     candidates.push(EXTERNAL_ROOT)
   }
   candidates.push(app.getPath('downloads'))
   return candidates
 }
 
+// 外部盘挂载状态缓存(避免热路径每次同步 existsSync 网络盘)
+let _externalRootOk = false
+let _externalRootTs = 0
+function externalRootAvailable() {
+  const now = Date.now()
+  if (now - _externalRootTs > 30000) {
+    _externalRootTs = now
+    try { _externalRootOk = fs.existsSync(EXTERNAL_ROOT) } catch (_) { _externalRootOk = false }
+  }
+  return _externalRootOk
+}
+
 function getPrimaryDownloadRoot() {
-  if (EXTERNAL_ROOT !== INTERNAL_ROOT && fs.existsSync(EXTERNAL_ROOT)) {
+  if (EXTERNAL_ROOT !== INTERNAL_ROOT && externalRootAvailable()) {
     return EXTERNAL_ROOT
   }
   return INTERNAL_ROOT
@@ -53,7 +250,7 @@ const COMIC_DIR_CACHE_TTL = 5 * 60 * 1000
 const chapterDirCache = new Map()
 let chapterDirCacheTimestamp = 0
 
-function resolveUniqueComicDir(preferredPath, sourceUrl) {
+async function resolveUniqueComicDir(preferredPath, sourceUrl) {
   // 防御：preferredPath 绝不能是下载根目录本身
   const rootSet = new Set(getDownloadRoots().map(r => path.resolve(r)))
   if (rootSet.has(path.resolve(preferredPath))) {
@@ -62,8 +259,8 @@ function resolveUniqueComicDir(preferredPath, sourceUrl) {
 
   // 预订机制 (2026-07-27): 选定目录后立即 mkdir + 回写 local_path。
   // 否则两本同名漫画并发解析时(目录都还不存在)会拿到同一路径串本。
-  const reserve = (p) => {
-    try { fs.mkdirSync(p, { recursive: true }) } catch (_) {}
+  const reserve = async (p) => {
+    try { await fs.promises.mkdir(p, { recursive: true }) } catch (_) {}
     if (sourceUrl) {
       try {
         const raw = db.getRawDB()
@@ -73,7 +270,7 @@ function resolveUniqueComicDir(preferredPath, sourceUrl) {
     return p
   }
 
-  if (!fs.existsSync(preferredPath)) return reserve(preferredPath)
+  if (!(await existsAsync(preferredPath))) return await reserve(preferredPath)
 
   if (sourceUrl) {
     try {
@@ -81,8 +278,25 @@ function resolveUniqueComicDir(preferredPath, sourceUrl) {
       if (raw) {
         const row = raw.prepare('SELECT local_path FROM comics WHERE sourceUrl = ?').get(sourceUrl)
         if (row?.local_path === preferredPath) return preferredPath
+        // Bug #46 修复: preferredPath 存在但 DB 中自己未映射 → 不等于"被占"!
+        // 先确认该路径是否被 *其他* sourceUrl 占用:
+        //   - 没人占用: 这就是之前下载的漏写了 local_path 的老目录,直接用 + 回写 DB
+        //   - 被别人占用: 才进入 _N 分配逻辑
+        const occupant = raw.prepare('SELECT sourceUrl FROM comics WHERE local_path = ? LIMIT 1').get(preferredPath)
+        if (!occupant || !occupant.sourceUrl) {
+          try { console.log(`[resolveUniqueComicDir] 目录已存在但未入 DB 映射,直接认领: ${preferredPath}`) } catch {}
+          return reserve(preferredPath)
+        }
+        if (occupant.sourceUrl === sourceUrl) {
+          return preferredPath
+        }
+        // 被其他漫画占用才继续
+        try { console.warn(`[resolveUniqueComicDir] 目录已被其他漫画占用: ${preferredPath} 被=${occupant.sourceUrl.slice(0,60)} 自己=${String(sourceUrl||'').slice(0,60)} → 分配 _N`) } catch {}
       }
     } catch (_) {}
+  } else {
+    // 没有 sourceUrl 的场景(极少见): 目录存在也直接用, 反正没人声明归属
+    return reserve(preferredPath)
   }
 
   let counter = 1
@@ -90,12 +304,13 @@ function resolveUniqueComicDir(preferredPath, sourceUrl) {
   do {
     candidate = `${preferredPath}_${counter}`
     counter++
-  } while (fs.existsSync(candidate))
-  return reserve(candidate)
+  } while (await existsAsync(candidate))
+  return await reserve(candidate)
 }
 
-function findComicDir(title, sourceUrl) {
+async function findComicDir(title, sourceUrl) {
   // 获取所有下载根目录的 resolved 路径，用于防御性检查
+  // 注: getDownloadRoots() 内部已用 externalRootAvailable() 缓存, 不再每次同步扫网络盘
   const rootSet = new Set(getDownloadRoots().map(r => path.resolve(r)))
 
   if (sourceUrl) {
@@ -104,29 +319,41 @@ function findComicDir(title, sourceUrl) {
       if (raw) {
         const row = raw.prepare('SELECT local_path FROM comics WHERE sourceUrl = ?').get(sourceUrl)
         // 防御：local_path 不能是下载根目录本身（历史脏数据）
-        if (row?.local_path && fs.existsSync(row.local_path) && !rootSet.has(path.resolve(row.local_path))) {
+        // 不再做 fs.existsSync(row.local_path): 同步网络盘 syscall 在热路径会卡主线程;
+        // 信任 DB 中已存的 local_path, 真正缺失会在后续 findChapterDir 找不到章节时自愈.
+        if (row?.local_path && !rootSet.has(path.resolve(row.local_path))) {
           return row.local_path
         }
       }
     } catch (_) {}
   }
 
-  // 同名多本防串 (2026-07-27): 标题在库里不唯一时, 禁止按标题兕底找目录
-  // (会住进另一本的目录)。只信上面的 sourceUrl→local_path 精确路径;
-  // 返回 null 让上层 resolveUniqueComicDir 分配独立目录(自动加后缀)。
-  // 注意: ① 必须放在缓存检查之前(缓存按标题键存, 同名两本命中同一条);
-  // ② 传入标题(源站)与库内标题可能有全角/半角差异, 必须两边都查,
-  //   否则源站标题查重=1 会绕过检查(2026-07-27 实测踩坑)。
+  // 同名多本防串 (2026-07-27 / Bug #43 修正):
+  //  源站标题和库中 DB title 可能存在全角/半角标点差异(如 ":" vs "："), 按原字符串
+  //   WHERE title = ? 会返回 1, 绕过同名检测, 结果会错误地进入另一本已存在的目录。
+  //  改用 normalizeName 统一去符号/去去重后缀后比同组, 确保:
+  //   ① 全角/半冒号、[ ]/【 】、「找回自我」vs「找回自我_1」都视为同组；
+  //   ② 同组超过 1 本时，禁止按标题兜底找目录(会住进另一本的目录)，
+  //     只信上面的 sourceUrl→local_path 精确路径；返回 null 让上层 resolveUniqueComicDir
+  //     自动分配独立目录(加 _N 后缀)。
+  //  注意: 必须放在缓存检查之前 — 缓存按标题键存, 同名两本命中同一条缓存。
   try {
     const raw = db.getRawDB()
     if (raw) {
-      const dupStmt = raw.prepare('SELECT COUNT(*) AS n FROM comics WHERE title = ?')
-      let dupN = dupStmt.get(title)?.n || 0
+      const allRows = raw.prepare('SELECT title FROM comics').all()
+      const normT = normalizeName(title) || normalizeTitle(title)
+      let dupN = 0
+      const candidates = new Set()
+      candidates.add(normT)
       if (sourceUrl) {
         const own = raw.prepare('SELECT title FROM comics WHERE sourceUrl = ?').get(sourceUrl)
-        if (own?.title && own.title !== title) {
-          dupN = Math.max(dupN, dupStmt.get(own.title)?.n || 0)
+        if (own?.title) {
+          candidates.add(normalizeName(own.title) || normalizeTitle(own.title))
         }
+      }
+      for (const r of allRows) {
+        const rn = normalizeName(r.title) || normalizeTitle(r.title)
+        if (rn && candidates.has(rn)) dupN++
       }
       if (dupN > 1) return null
     }
@@ -142,28 +369,60 @@ function findComicDir(title, sourceUrl) {
   const candidates = [sanitize(title), title]
   const normTitle = normalizeName(title)
 
-  for (const root of getDownloadRoots()) {
-    for (const c of candidates) {
-      const p = path.join(root, c)
-      if (fs.existsSync(p)) {
-        comicDirCache.set(cacheKey, p)
-        comicDirCacheTimestamp = now
-        return p
-      }
-    }
+  // Bug #44 / [3D]沉沦 串写 修复: 扫盘匹配后,若该目录在 DB 中已被其他漫画占用,
+  // 则不做命中,避免把新漫画下载到别人已存在的目录里。
+  // (例如 normDir==='3d沉沦' 但实际磁盘目录是「母娘...沉沦...七海」,
+  // 被其他漫画占用,就不能因为 normalize 后都含「沉沦」而误匹配。)
+  let rawForCheck = null
+  try {
+    const dbRaw = db.getRawDB()
+    if (dbRaw) rawForCheck = dbRaw.prepare('SELECT sourceUrl FROM comics WHERE local_path = ? LIMIT 1')
+  } catch (_) {}
 
+  for (const root of getDownloadRoots()) {
     try {
-      const entries = fs.readdirSync(root, { withFileTypes: true })
+      const entries = await fs.promises.readdir(root, { withFileTypes: true })
+      const matchedDirs = []
       for (const e of entries) {
         if (!e.isDirectory()) continue
+        // 1. 精确名称匹配（最高优先级）：目录名和清理后的标题完全一致
+        if (e.name === sanitize(title) || e.name === title) {
+          matchedDirs.push({ name: e.name, exact: true, hasSuffix: false })
+          continue
+        }
         const normDir = normalizeName(e.name)
         if (normDir && normTitle && normDir === normTitle) {
-          const p = path.join(root, e.name)
-          comicDirCache.set(cacheKey, p)
-          comicDirCache.set(normalizeName(e.name), p)
-          comicDirCacheTimestamp = now
-          return p
+          // 2. 标准化匹配：区分"是否带 _N 去重后缀"，优先无后缀版本
+          const hasSuffix = /[\s_\-（(]\s*\d+\s*[)）]?\s*$/.test(e.name) || /[\s_\-]\s*\d+\s*$/.test(e.name)
+          matchedDirs.push({ name: e.name, exact: false, hasSuffix })
         }
+      }
+      // 排序优先级: exact=true > exact=false且无后缀 > exact=false且带后缀；
+      // 同优先级再按目录名长度升序（更短的通常更"原始"），确保 [3D]沉沦 优先于 [3D]沉沦_1。
+      matchedDirs.sort((a, b) => {
+        const rank = x => (x.exact ? 0 : (x.hasSuffix ? 2 : 1))
+        const ra = rank(a), rb = rank(b)
+        if (ra !== rb) return ra - rb
+        return a.name.length - b.name.length
+      })
+      for (const m of matchedDirs) {
+        const p = path.join(root, m.name)
+        if (rawForCheck) {
+          try {
+            const occupant = rawForCheck.get(p)
+            // 只有 2 种情况允许命中:
+            //  ① DB 中没人占用此目录 (occupant 为空);
+            //  ② 占用者就是自己 (sourceUrl 匹配)。
+            // 如果被其他 sourceUrl 的漫画占用, 跳过, 继续试下一个候选（比如优先无后缀目录被占用了，再试 _1）。
+            if (occupant && occupant.sourceUrl && sourceUrl && occupant.sourceUrl !== sourceUrl) {
+              continue
+            }
+          } catch (_) {}
+        }
+        comicDirCache.set(cacheKey, p)
+        comicDirCache.set(normalizeName(m.name), p)
+        comicDirCacheTimestamp = now
+        return p
       }
     } catch (_) {}
   }
@@ -179,19 +438,21 @@ function clearComicDirCache() {
   chapterDirCacheTimestamp = 0
 }
 
-function findChapterDir(comicDir, chapterIndex, chapterName, usedDirs) {
-  if (!comicDir || !fs.existsSync(comicDir)) return null
+async function findChapterDir(comicDir, chapterIndex, chapterName, usedDirs) {
+  // 去掉同步 fs.existsSync(comicDir): 调用方(_triggerAutoDownload)传入的 comicDir 已由 findComicDir 确认存在,
+  // 而网络盘上每次 existsSync 走 AFP/SMB 协议延迟高, 每章一次 = 几千次同步 syscall 卡死主线程.
+  if (!comicDir) return null
   const now = Date.now()
   const cacheKey = `${comicDir}:${chapterIndex}:${chapterName}`
   
   if (now - chapterDirCacheTimestamp < COMIC_DIR_CACHE_TTL && chapterDirCache.has(cacheKey)) {
     const cached = chapterDirCache.get(cacheKey)
-    if (cached && fs.existsSync(cached)) return cached
+    if (cached && await existsAsync(cached)) return cached
     if (cached === null) return null
   }
 
   const used = usedDirs || new Set()
-  const entries = fs.readdirSync(comicDir, { withFileTypes: true })
+  const entries = (await fs.promises.readdir(comicDir, { withFileTypes: true }))
     .filter(e => e.isDirectory() && !used.has(path.join(comicDir, e.name)))
 
   const exactByName = entries.find(e => {
@@ -209,7 +470,7 @@ function findChapterDir(comicDir, chapterIndex, chapterName, usedDirs) {
   })
   if (exactByName) {
       const chPath = path.join(comicDir, exactByName.name)
-      const files = listChapterImages(chPath)
+      const files = await listChapterImages(chPath)
       if (files.length > 3 || (files.length > 0 && !chapterName)) {
         chapterDirCache.set(cacheKey, chPath)
         chapterDirCacheTimestamp = now
@@ -232,7 +493,7 @@ function findChapterDir(comicDir, chapterIndex, chapterName, usedDirs) {
     })
     if (nameOnlyMatch) {
       const chPath = path.join(comicDir, nameOnlyMatch.name)
-      const files = listChapterImages(chPath)
+      const files = await listChapterImages(chPath)
       if (files.length > 3) {
         chapterDirCache.set(cacheKey, chPath)
         chapterDirCacheTimestamp = now
@@ -260,7 +521,7 @@ function findChapterDir(comicDir, chapterIndex, chapterName, usedDirs) {
   })
   if (exactByIndex) {
     const chPath = path.join(comicDir, exactByIndex.name)
-    const files = listChapterImages(chPath)
+    const files = await listChapterImages(chPath)
     if (files.length > 3) {
       chapterDirCache.set(cacheKey, chPath)
       chapterDirCacheTimestamp = now
@@ -280,7 +541,7 @@ function findChapterDir(comicDir, chapterIndex, chapterName, usedDirs) {
     const num = parseInt(candidate.name.match(/^(\d+)/)[1], 10)
     if (Math.abs(num - (chapterIndex + 1)) <= 2) {
       const chPath = path.join(comicDir, candidate.name)
-      const files = listChapterImages(chPath)
+      const files = await listChapterImages(chPath)
       if (files.length > 3) {
         chapterDirCache.set(cacheKey, chPath)
         chapterDirCacheTimestamp = now
@@ -292,9 +553,9 @@ function findChapterDir(comicDir, chapterIndex, chapterName, usedDirs) {
   return null
 }
 
-function listChapterImages(chapterDir) {
-  if (!chapterDir || !fs.existsSync(chapterDir)) return []
-  const files = fs.readdirSync(chapterDir).filter(f =>
+async function listChapterImages(chapterDir) {
+  if (!chapterDir || !(await existsAsync(chapterDir))) return []
+  const files = (await fs.promises.readdir(chapterDir)).filter(f =>
     /\.(webp|jpg|jpeg|png|gif|avif|bmp)$/i.test(f)
   )
   files.sort((a, b) => {
@@ -317,19 +578,24 @@ function detectBufferFormat(buffer) {
 }
 
 async function detectFileFormat(filePath) {
-  const fd = fs.openSync(filePath, 'r')
-  const header = Buffer.alloc(12)
-  fs.readSync(fd, header, 0, 12, 0)
-  fs.closeSync(fd)
-  return detectBufferFormat(header)
+  // Bug #11 修复: fs.openSync 后如果 readSync 抛错, fd 会泄漏; 用 try/finally 确保 close
+  const fd = await fs.promises.open(filePath, 'r')
+  try {
+    const header = Buffer.alloc(12)
+    await fd.read(header, 0, 12, 0)
+    return detectBufferFormat(header)
+  } finally {
+    await fd.close()
+  }
 }
 
 async function validateImageFile(filePath) {
   try {
-    if (!fs.existsSync(filePath)) return false
-    const stat = fs.statSync(filePath)
-    if (stat.size === 0) return false
-    await sharpPool.metadata(filePath)
+    // 不再用同步 fs.statSync/existsSync (网络盘上每个 stat 走 AFP/SMB 协议,
+    // 几百本×每本几十章×每章上百图 = 几万次同步 syscall 会彻底堵死主线程).
+    // 直接让 sharp 读图头: 文件不存在/为空/损坏都会 reject, 自然返回 false.
+    const meta = await sharpPool.metadata(filePath)
+    if (!meta || (meta.width === 0 && meta.height === 0)) return false
     return true
   } catch (e) {
     return false
@@ -337,7 +603,7 @@ async function validateImageFile(filePath) {
 }
 
 async function getValidChapterImages(chapterDir) {
-  const allFiles = listChapterImages(chapterDir)
+  const allFiles = await listChapterImages(chapterDir)
   const validFiles = []
   for (const f of allFiles) {
     if (await validateImageFile(f)) {
@@ -362,23 +628,30 @@ function getSharpCachePath(chDir) {
   return path.join(chDir, '.sharp_cache.json')
 }
 
-function loadSharpCache(chDir) {
+async function loadSharpCache(chDir) {
   const p = getSharpCachePath(chDir)
   try {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8')) || {}
+    // 直接尝试读, 文件不存在/解析失败都返回空缓存; 不再用同步 fs.existsSync+readFileSync
+    return JSON.parse(await fs.promises.readFile(p, 'utf8')) || {}
   } catch (_) {}
   return {}
 }
 
-function saveSharpCache(chDir, cache) {
+async function saveSharpCache(chDir, cache) {
   try {
-    fs.writeFileSync(getSharpCachePath(chDir), JSON.stringify(cache))
-  } catch (_) {}
+    // Bug #20 修复: 原子写 — 先写 .tmp 再 rename
+    const finalPath = getSharpCachePath(chDir)
+    const tmpPath = finalPath + '.tmp'
+    await fs.promises.writeFile(tmpPath, JSON.stringify(cache))
+    await fs.promises.rename(tmpPath, finalPath)
+  } catch (e) {
+    console.warn(`[下载] 保存 sharp 缓存失败: ${e.message}`)
+  }
 }
 
-function fileFingerprint(filePath) {
+async function fileFingerprint(filePath) {
   try {
-    const st = fs.statSync(filePath)
+    const st = await fs.promises.stat(filePath)
     return { size: st.size, mtime: Math.round(st.mtimeMs) }
   } catch (_) {
     return null
@@ -386,10 +659,10 @@ function fileFingerprint(filePath) {
 }
 
 async function getValidChapterImagesCached(chapterDir) {
-  const allFiles = listChapterImages(chapterDir)
+  const allFiles = await listChapterImages(chapterDir)
   if (allFiles.length === 0) return { validFiles: [], allVerified: false }
 
-  const cache = loadSharpCache(chapterDir)
+  const cache = await loadSharpCache(chapterDir)
   const cacheEntries = cache.entries || {}
   const validFiles = []
   let allVerified = true
@@ -397,7 +670,7 @@ async function getValidChapterImagesCached(chapterDir) {
   const nextEntries = {}
 
   for (const f of allFiles) {
-    const fp = fileFingerprint(f)
+    const fp = await fileFingerprint(f)
     const base = path.basename(f)
     const prev = cacheEntries[base]
     const hit = fp && prev && prev.size === fp.size && prev.mtime === fp.mtime
@@ -427,7 +700,7 @@ async function getValidChapterImagesCached(chapterDir) {
   }
 
   if (dirty || Object.keys(nextEntries).length !== Object.keys(cacheEntries).length) {
-    saveSharpCache(chapterDir, { entries: nextEntries })
+    await saveSharpCache(chapterDir, { entries: nextEntries })
   }
   return { validFiles, allVerified }
 }
@@ -446,22 +719,24 @@ function getChapterStatePath(chDir) {
   return path.join(chDir, '.chapter_state.json')
 }
 
-function loadChapterState(chDir) {
+async function loadChapterState(chDir) {
   const p = getChapterStatePath(chDir)
   try {
-    if (fs.existsSync(p)) {
-      const state = JSON.parse(fs.readFileSync(p, 'utf8'))
-      return state
-    }
+    const state = JSON.parse(await fs.promises.readFile(p, 'utf8'))
+    return state
   } catch (e) {
     console.warn(`[下载] 读取章节状态失败: ${e.message}`)
   }
   return null
 }
 
-function saveChapterState(chDir, state) {
+async function saveChapterState(chDir, state) {
   try {
-    fs.writeFileSync(getChapterStatePath(chDir), JSON.stringify(state, null, 2))
+    // Bug #20 修复: 原子写 — 先写 .tmp 再 rename, 防止崩溃时产生截断 JSON
+    const finalPath = getChapterStatePath(chDir)
+    const tmpPath = finalPath + '.tmp'
+    await fs.promises.writeFile(tmpPath, JSON.stringify(state, null, 2))
+    await fs.promises.rename(tmpPath, finalPath)
   } catch (e) {
     console.warn(`[下载] 保存章节状态失败: ${e.message}`)
   }
@@ -472,7 +747,7 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
     throw new Error('无图片可下载')
   }
 
-  const state = loadChapterState(chDir) || {
+  const state = await loadChapterState(chDir) || {
     totalImages: images.length,
     completedIndices: [],
     failedImages: [],
@@ -486,7 +761,7 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
   const indicesToDownload = []
   for (let i = startIndex || 0; i < images.length; i++) {
     const existingFile = path.join(chDir, `${String(i + 1).padStart(3, '0')}.webp`)
-    if (fs.existsSync(existingFile)) {
+    if (await existsAsync(existingFile)) {
       const isValid = await validateImageFile(existingFile)
       if (isValid) {
         if (!state.completedIndices.includes(i)) {
@@ -539,12 +814,18 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
       let retries = 0
       let success = false
       let lastError = null
+      // [增强 2026-08-20] 空图(瞬态)多给 2 次重试机会(共 5 次),因为源站偶发返回空 buffer。
+      const maxRetries = 5
 
-      while (retries < 3 && !success) {
+      while (retries < maxRetries && !success) {
         try {
-          const { buffer: buf } = await downloadBuf(imageUrl, chapter.url)
+          // 先用带变体回退的 downloadBuf:404/403 自动切 .webp + 换 CDN 主机重试
+          const { buffer: buf } = await downloadBufWithVariantFallback(imageUrl, chapter.url)
           if (!buf || buf.length === 0) {
-            throw new Error('下载的图片为空')
+            // [增强 2026-08-20] 空图(源站偶发返回 0 字节/损坏 buffer)按瞬态错误处理:
+            // 计入熔断失败让后续更可能切到其它主机,并触发重试而不是永久失败。
+            try { _hostBreakerRecordFailure(new url.URL(imageUrl).hostname) } catch {}
+            throw new Error('下载的图片为空(空buffer)')
           }
           imageBuffers.set(imageIndex, buf)
           bytesDownloaded += buf.length
@@ -552,13 +833,42 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
         } catch (e) {
           retries++
           lastError = e
-          if (retries >= 3) {
+          // Bug #21 修复: 永久错误(所有变体均 404/403)不重试, 直接计入失败
+          const msg = String(e?.message || e)
+          // [增强 2026-08-20] 空图是瞬态错误,不计入永久失败,继续重试(直到 maxRetries 用尽)
+          if (msg.includes('下载的图片为空')) {
+            if (retries < maxRetries) {
+              const delay = 800 + Math.random() * 1200
+              try { console.log(`[下载] 第${imageIndex + 1}页 空图重试,等待 ${Math.round(delay)}ms...`) } catch {}
+              await new Promise(r => setTimeout(r, delay))
+              continue
+            }
+            // 重试耗尽仍空:记为失败项
+            currentFailedImages.push({
+              index: imageIndex + 1,
+              url: imageUrl,
+              error: '空图(重试耗尽)',
+              emptyImage: true
+            })
+            try { console.warn(`[下载] 图片空图重试耗尽 ${comicTitle} › ${chapterName} 第${imageIndex + 1}页`) } catch {}
+            break
+          }
+          if (msg.includes('HTTP 404') || msg.includes('均失败') || msg.includes('HTTP 403')) {
             currentFailedImages.push({
               index: imageIndex + 1,
               url: imageUrl,
               error: e.message
             })
-            try { console.warn(`[下载] 图片下载失败 ${comicTitle} › ${chapterName} 第${imageIndex + 1}页 (${retries}/3): ${e.message}`) } catch {}
+            try { console.warn(`[下载] 图片永久失败 ${comicTitle} › ${chapterName} 第${imageIndex + 1}页: ${e.message}`) } catch {}
+            break
+          }
+          if (retries >= maxRetries) {
+            currentFailedImages.push({
+              index: imageIndex + 1,
+              url: imageUrl,
+              error: e.message
+            })
+            try { console.warn(`[下载] 图片下载失败 ${comicTitle} › ${chapterName} 第${imageIndex + 1}页 (${retries}/${maxRetries}): ${e.message}`) } catch {}
           } else {
             const delay = 1000 * Math.pow(2, retries - 1) + Math.random() * 1000
             try { console.log(`[下载] 第${imageIndex + 1}页 第${retries}次重试，等待 ${Math.round(delay)}ms...`) } catch {}
@@ -593,7 +903,7 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
     for (const [idx, buf] of imageBuffers) {
       if (!buf) continue
       const outPath = path.join(chDir, `${String(idx + 1).padStart(3, '0')}.webp`)
-      if (fs.existsSync(outPath)) {
+      if (await existsAsync(outPath)) {
         // 已真正落盘：保留计入完成
         downloadedOnDisk++
         if (!state.completedIndices.includes(idx)) {
@@ -604,7 +914,7 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
         pendingInBuffer++
       }
     }
-    saveChapterState(chDir, state)
+    await saveChapterState(chDir, state)
     return {
       cancelled: true,
       downloaded: downloadedOnDisk,
@@ -625,7 +935,7 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
       if (actualFormat !== 'webp') {
         console.warn(`[下载] 图片格式不正确(${actualFormat})，重新转换: ${outPath}`)
         const webpBuf = await sharpPool.webpConvertToBuffer(buf, { quality: 85 })
-        fs.writeFileSync(outPath, webpBuf)
+        await fs.promises.writeFile(outPath, webpBuf)
       }
       downloaded++
       if (!state.completedIndices.includes(imageIndex)) {
@@ -635,20 +945,35 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
     } catch (e) {
       writeErrors.push({ index: imageIndex + 1, error: e.message })
       try { console.warn(`[下载] 图片转换失败 ${comicTitle} › ${chapterName} 第${imageIndex + 1}页: ${e.message}`) } catch {}
+      // Bug #5 修复: writeErrors 合入 state.failedImages, 同时从 completedIndices 中去掉(防止失败当成功)
+      state.completedIndices = state.completedIndices.filter(i => i !== imageIndex)
+      // 避免 failedImages 里同一 index 重复
+      state.failedImages = (state.failedImages || []).filter(f => f.index !== imageIndex + 1)
+      state.failedImages.push({
+        index: imageIndex + 1,
+        url: (images[imageIndex] && (typeof images[imageIndex] === 'string' ? images[imageIndex] : images[imageIndex].url)) || '',
+        error: `write:${e.message}`
+      })
     }
   }
 
   if (currentFailedImages.length > 0) {
-    state.failedImages = [...(state.failedImages || []), ...currentFailedImages]
+    const existing = new Set((state.failedImages || []).map(f => f.index))
+    for (const f of currentFailedImages) {
+      if (!existing.has(f.index)) state.failedImages.push(f)
+    }
   }
 
-  saveChapterState(chDir, state)
+  await saveChapterState(chDir, state)
 
-  if (state.completedIndices.length >= images.length) {
+  // Bug #4 修复: 所有页面都已下载 AND 没有任何失败项 => success=true
+  const failedCount = (state.failedImages || []).length
+  const allCompleted = state.completedIndices.length >= images.length
+  if (allCompleted && failedCount === 0) {
     try {
       const statePath = getChapterStatePath(chDir)
-      if (fs.existsSync(statePath)) {
-        fs.unlinkSync(statePath)
+      if (await existsAsync(statePath)) {
+        await fs.promises.unlink(statePath)
         try { console.log(`[下载] 章节完成，清理状态文件: ${chapterName}`) } catch {}
       }
     } catch (e) {}
@@ -663,15 +988,19 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
   })
 
   const result = {
-    success: true,
+    // Bug #4 修复: success 不再永远为 true
+    success: allCompleted && failedCount === 0,
     downloaded,
     total: images.length,
     chapter: chapterName
   }
 
-  if (state.failedImages && state.failedImages.length > 0) {
+  if (failedCount > 0) {
     result.failedImages = state.failedImages
-    result.failedCount = state.failedImages.length
+    result.failedCount = failedCount
+  }
+  if (writeErrors.length > 0) {
+    result.writeErrors = writeErrors
   }
 
   return result
@@ -680,13 +1009,13 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
 async function downloadAndConvert(url, filePath, referer) {
   for (let i = 0; i < 3; i++) {
     try {
-      const { buffer, byteLength } = await downloadBuf(url, referer)
+      const { buffer, byteLength } = await downloadBufWithVariantFallback(url, referer)
       await sharpPool.webpConvert(buffer, filePath, { quality: 85 })
       const actualFormat = await detectFileFormat(filePath)
       if (actualFormat !== 'webp') {
         console.warn(`[下载] 图片格式不正确(${actualFormat})，重新转换: ${filePath}`)
         const webpBuf = await sharpPool.webpConvertToBuffer(buffer, { quality: 85 })
-        fs.writeFileSync(filePath, webpBuf)
+        await fs.promises.writeFile(filePath, webpBuf)
       }
       return byteLength
     } catch (e) { if (i === 2) throw e; await sleep(1000 * (i + 1)) }
@@ -694,28 +1023,60 @@ async function downloadAndConvert(url, filePath, referer) {
   return 0
 }
 const MAX_REDIRECTS = 5
-function downloadBuf(imageUrl, referer, timeoutMs = 30000, redirectsLeft = MAX_REDIRECTS) {
+async function downloadBuf(imageUrl, referer, timeoutMs = 30000, redirectsLeft = MAX_REDIRECTS) {
+  // DNS 预解析: 用公共 DNS(8.8.8.8/1.1.1.1)快速检查域名是否可解析(3 秒超时)
+  // 避免系统 DNS 对 18rouman.vip 等域名超时 28-49 秒, 触发 downloadBuf 30 秒超时
+  const dnsOk = await dnsCache.prefetch(imageUrl)
+  if (!dnsOk) {
+    let hostname = ''
+    try { hostname = new url.URL(imageUrl).hostname } catch {}
+    throw new Error(`DNS 解析失败: ${hostname}`)
+  }
+
   return new Promise((resolve, reject) => {
     let settled = false
-    const lib = imageUrl.startsWith('https') ? https : http
-    const req = lib.get(imageUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Referer': referer || imageUrl, 'Accept': 'image/*'
-      }
-    }, (res) => {
+
+    // 使用 Electron net 模块 (Chromium 网络栈), 与浏览器 DNS 解析一致, 避免 Node.js getaddrinfo ENOTFOUND
+    // Bug #45 修复: 用 net.request 的 referrer 选项替代 setHeader('Referer', ...),
+    //   否则 Chromium 的 Referrer 安全策略会判定跨域 referrer 无效并阻止请求
+    //   (smtt6.com → 18rouman.vip 跨域, setHeader 设置的 Referer 被 ERR_BLOCKED_BY_CLIENT 拦截)
+    const request = net.request({
+      method: 'GET',
+      url: imageUrl,
+      redirect: 'manual',
+      referrer: referer || '',
+    })
+    request.setHeader('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    request.setHeader('Accept', 'image/*')
+
+    let reqTimeout = setTimeout(() => {
+      if (settled) return
+      settled = true
+      try { request.abort() } catch (_) {}
+      // [增强 2026-08-20] 熔断:请求超时计入主机失败
+      try { _hostBreakerRecordFailure(new url.URL(imageUrl).hostname) } catch {}
+      reject(new Error('Request timeout'))
+    }, timeoutMs)
+
+    request.on('response', (res) => {
       if (settled) { res.resume(); return }
+
       if ([301, 302, 307, 308].includes(res.statusCode)) {
-        req.destroy()
+        try { request.abort() } catch (_) {}
+        clearTimeout(reqTimeout)
         settled = true
         if (redirectsLeft <= 0) {
           return reject(new Error(`重定向次数超过上限 (${MAX_REDIRECTS})`))
         }
-        const redirectUrl = new url.URL(res.headers.location, imageUrl).href
+        const location = res.headers.location
+        if (!location) return reject(new Error('重定向缺少 Location 头'))
+        const redirectUrl = location.startsWith('http') ? location : new url.URL(location, imageUrl).href
         return resolve(downloadBuf(redirectUrl, referer, timeoutMs, redirectsLeft - 1))
       }
+
       if (res.statusCode !== 200) {
-        req.destroy()
+        try { request.abort() } catch (_) {}
+        clearTimeout(reqTimeout)
         settled = true
         let errorMsg = `HTTP ${res.statusCode}`
         if (res.statusCode === 404) errorMsg = `HTTP 404 (图片不存在)`
@@ -724,17 +1085,25 @@ function downloadBuf(imageUrl, referer, timeoutMs = 30000, redirectsLeft = MAX_R
         else if (res.statusCode >= 500) errorMsg = `HTTP ${res.statusCode} (服务器错误)`
         return reject(new Error(errorMsg))
       }
+
       const c = []
       let resTimeout = setTimeout(() => {
+        if (settled) return
         settled = true
-        req.destroy()
+        try { request.abort() } catch (_) {}
+        // [增强 2026-08-20] 熔断:响应超时计入主机失败
+        try { _hostBreakerRecordFailure(new url.URL(imageUrl).hostname) } catch {}
         reject(new Error('Response timeout'))
       }, timeoutMs)
-      res.on('data', d => {
+
+      res.on('data', (d) => {
         clearTimeout(resTimeout)
         resTimeout = setTimeout(() => {
+          if (settled) return
           settled = true
-          req.destroy()
+          try { request.abort() } catch (_) {}
+          // [增强 2026-08-20] 熔断:响应体传输超时计入主机失败
+          try { _hostBreakerRecordFailure(new url.URL(imageUrl).hostname) } catch {}
           reject(new Error('Response timeout'))
         }, timeoutMs)
         c.push(d)
@@ -744,46 +1113,40 @@ function downloadBuf(imageUrl, referer, timeoutMs = 30000, redirectsLeft = MAX_R
         clearTimeout(resTimeout)
         settled = true
         const buf = Buffer.concat(c)
+        // [增强 2026-08-20] 熔断:成功拿到响应(即便空)也算主机可用,清除失败计数
+        try { _hostBreakerRecordSuccess(new url.URL(imageUrl).hostname) } catch {}
         resolve({ buffer: buf, byteLength: buf.length })
       })
       res.on('error', (e) => {
         if (settled) return
         clearTimeout(resTimeout)
         settled = true
-        req.destroy()
+        try { request.abort() } catch (_) {}
         reject(new Error(`Response error: ${(e && (e.message || e.code)) || String(e)}`))
       })
     })
-    let reqTimeout = setTimeout(() => {
-      if (settled) return
-      settled = true
-      req.destroy()
-      reject(new Error('Request timeout'))
-    }, timeoutMs)
-    req.on('timeout', () => {
+
+    request.on('error', (e) => {
       if (settled) return
       clearTimeout(reqTimeout)
       settled = true
-      req.destroy()
-      reject(new Error('Request timeout'))
-    })
-    req.on('error', (e) => {
-      if (settled) return
-      clearTimeout(reqTimeout)
-      settled = true
-      // e 通常是 Node.js 系统错误对象（含 code/errno/syscall），但 message 可能为空或不友好
-      // 将其包装为可读的 Error，同时保留原始 code
       const code = (e && e.code) || ''
       const rawMsg = (e && e.message) || ''
       const friendly = code ? `网络请求失败: ${code} ${rawMsg}`.trim() : (rawMsg || '网络请求失败: 未知错误')
+      // [增强 2026-08-20] 熔断:网络层失败(含 ECONNRESET/超时)计入该主机失败
+      if (_isNetworkFailure(friendly)) {
+        try { _hostBreakerRecordFailure(new url.URL(imageUrl).hostname) } catch {}
+      }
       reject(new Error(friendly))
     })
+
+    request.end()
   })
 }
 async function checkChapterHealth(chapterDir, options = {}) {
   const { onlineCount, deepCheck } = options
   const issues = []
-  const allFiles = listChapterImages(chapterDir)
+  const allFiles = await listChapterImages(chapterDir)
 
   if (allFiles.length === 0) {
     issues.push({ type: 'empty', message: '章节目录为空' })
@@ -794,7 +1157,7 @@ async function checkChapterHealth(chapterDir, options = {}) {
   let emptyCount = 0
   for (const f of allFiles) {
     try {
-      const stat = fs.statSync(f)
+      const stat = await fs.promises.stat(f)
       if (stat.size === 0) {
         emptyCount++
         issues.push({ type: 'empty_file', file: f, message: `空文件: ${path.basename(f)}` })
@@ -838,16 +1201,16 @@ async function checkChapterHealth(chapterDir, options = {}) {
 
 async function checkComicHealth(comicDir, options = {}) {
   const { chapterOnlineCounts } = options
-  if (!comicDir || !fs.existsSync(comicDir)) {
+  if (!comicDir || !(await existsAsync(comicDir))) {
     return { healthy: false, chapters: [], message: '漫画目录不存在' }
   }
 
-  const entries = fs.readdirSync(comicDir, { withFileTypes: true })
+  const entries = await fs.promises.readdir(comicDir, { withFileTypes: true })
   const chapterDirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.'))
 
   let missingCover = false
   const coverPath = path.join(comicDir, 'cover.webp')
-  if (!fs.existsSync(coverPath)) {
+  if (!(await existsAsync(coverPath))) {
     missingCover = true
   }
 
@@ -883,6 +1246,7 @@ async function checkComicHealth(comicDir, options = {}) {
 }
 
 module.exports = {
+  existsAsync,
   getDownloadRoots,
   getPrimaryDownloadRoot,
   setExternalRoot,
@@ -905,6 +1269,8 @@ module.exports = {
   downloadChapterImages,
   downloadAndConvert,
   downloadBuf,
+  downloadBufWithVariantFallback,
+  generateImageUrlVariants,
   sleep,
   checkChapterHealth,
   checkComicHealth,
@@ -912,7 +1278,7 @@ module.exports = {
   setGlobalDownloadConcurrency
 }
 
-function resolveComicDir(comicTitle, sourceUrl, payloadComicDir) {
+async function resolveComicDir(comicTitle, sourceUrl, payloadComicDir) {
   if (payloadComicDir && typeof payloadComicDir === 'string' && payloadComicDir.trim() !== '') {
     return payloadComicDir
   }
@@ -920,13 +1286,30 @@ function resolveComicDir(comicTitle, sourceUrl, payloadComicDir) {
     throw new Error('漫画标题不能为空，无法确定下载路径')
   }
   const title = comicTitle.trim()
-  let dir = findComicDir(title, sourceUrl)
+  let dir = await findComicDir(title, sourceUrl)
+
+  // Bug #44 第二道防线: findComicDir 命中后,再核对 DB 中该路径是否被其他漫画占用。
+  // findComicDir 里虽已做占用检查,但缓存 / try-catch 吞错等场景可能漏过;
+  // resolveComicDir 是真正进入下载前的最后关口,在这里兜底最稳。
+  if (dir) {
+    try {
+      const raw = db.getRawDB()
+      if (raw) {
+        const occupant = raw.prepare('SELECT sourceUrl FROM comics WHERE local_path = ? LIMIT 1').get(dir)
+        if (occupant && occupant.sourceUrl && sourceUrl && occupant.sourceUrl !== sourceUrl) {
+          console.warn(`[resolveComicDir] findComicDir 命中的目录已被其他漫画占用,放弃匹配并分配新目录: 「${title}」path=${dir}  被 sourceUrl=${occupant.sourceUrl.slice(0,60)} 占用`)
+          dir = null
+        }
+      }
+    } catch (_) {}
+  }
+
   if (!dir) {
     const preferred = path.join(getPrimaryDownloadRoot(), sanitize(title))
-    dir = resolveUniqueComicDir(preferred, sourceUrl)
+    dir = await resolveUniqueComicDir(preferred, sourceUrl)
   }
   const downloadRoot = getPrimaryDownloadRoot()
-  if (downloadRoot.startsWith('/Volumes/') && !fs.existsSync(downloadRoot)) {
+  if (downloadRoot.startsWith('/Volumes/') && !(await existsAsync(downloadRoot))) {
     throw new Error(`下载磁盘未挂载: ${downloadRoot}\n请先连接外部磁盘后再下载`)
   }
   const resolvedComicDir = path.resolve(dir)
@@ -934,8 +1317,8 @@ function resolveComicDir(comicTitle, sourceUrl, payloadComicDir) {
   if (resolvedComicDir === resolvedRoot) {
     throw new Error(`漫画目录路径无效，与下载根目录相同: ${dir}`)
   }
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true })
+  if (!(await existsAsync(dir))) {
+    await fs.promises.mkdir(dir, { recursive: true })
   }
   return dir
 }

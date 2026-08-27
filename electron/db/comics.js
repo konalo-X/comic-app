@@ -92,21 +92,16 @@ function _upsertComicInternal(comic, now) {
       newDelta = chCount - existingChCount
     }
 
-    db.prepare(`UPDATE comics SET
+    // Bug #23 修复: comic UPDATE 与 chapters 操作放进同一个事务, 保证原子性
+    const updateComicStmt = db.prepare(`UPDATE comics SET
       title=?, cover=?, local_cover=COALESCE(?, local_cover),
       author=?, status=?, desc_text=?, tags=?, category=?,
       updateTime=COALESCE(?, updateTime), chapter_count=?,
       update_delta=?, favorited=?,
       chapter_names_enriched=CASE WHEN ? > ? THEN 0 ELSE chapter_names_enriched END,
       local_path=COALESCE(NULLIF(?, ''), local_path), updatedAt=?
-      WHERE id=?`).run(
-      finalTitle, finalCover, comic.local_cover || null,
-      finalAuthor, finalStatus,
-      finalDesc, finalTags, finalCategory,
-      comic.updateTime ? Number(comic.updateTime) : null,
-      finalChCount, newDelta, comic.favorited !== undefined ? comic.favorited : existingFavorited,
-      chCount, existingChCount, comic.local_path || null, now, id
-    )
+      WHERE id=?`)
+
     if (chCount > 0) {
       const existingRows = db.prepare('SELECT url, name, sort_order, image_count FROM chapters WHERE comic_id=?').all(id)
       const existingMap = new Map()
@@ -123,6 +118,14 @@ function _upsertComicInternal(comic, now) {
       const deleteStmt = db.prepare('DELETE FROM chapters WHERE comic_id=? AND url=?')
 
       const chapterOps = db.transaction(() => {
+        updateComicStmt.run(
+          finalTitle, finalCover, comic.local_cover || null,
+          finalAuthor, finalStatus,
+          finalDesc, finalTags, finalCategory,
+          comic.updateTime ? Number(comic.updateTime) : null,
+          finalChCount, newDelta, comic.favorited !== undefined ? comic.favorited : existingFavorited,
+          chCount, existingChCount, comic.local_path || null, now, id
+        )
         for (let i = 0; i < chapters.length; i++) {
           const ch = chapters[i]
           const chUrl = ch.url || ''
@@ -146,6 +149,16 @@ function _upsertComicInternal(comic, now) {
         }
       })
       chapterOps()
+    } else {
+      // 没有章节更新时, 仅更新 comic 信息
+      updateComicStmt.run(
+        finalTitle, finalCover, comic.local_cover || null,
+        finalAuthor, finalStatus,
+        finalDesc, finalTags, finalCategory,
+        comic.updateTime ? Number(comic.updateTime) : null,
+        finalChCount, newDelta, comic.favorited !== undefined ? comic.favorited : existingFavorited,
+        chCount, existingChCount, comic.local_path || null, now, id
+      )
     }
     return { ...comic, _id: id, updatedAt: now, updateDelta: newDelta }
   } else {
@@ -330,16 +343,24 @@ async function getAllComicUrls(limit = 1000) {
 
 async function deleteComic(id) {
   const db = ensureDb()
-  db.prepare('DELETE FROM reading_progress WHERE comic_id=?').run(id)
-  db.prepare('DELETE FROM download_records WHERE comic_id=?').run(id)
-  db.prepare('DELETE FROM chapters WHERE comic_id=?').run(id)
-  db.prepare('DELETE FROM comics WHERE id=?').run(id)
+  // Bug #19 修复: 4 条 DELETE 包进事务, 中途失败可回滚, 避免产生孤儿记录
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM reading_progress WHERE comic_id=?').run(id)
+    db.prepare('DELETE FROM download_records WHERE comic_id=?').run(id)
+    db.prepare('DELETE FROM chapters WHERE comic_id=?').run(id)
+    db.prepare('DELETE FROM comics WHERE id=?').run(id)
+  })
+  tx()
 }
 
 async function clearAllComics() {
   const db = ensureDb()
-  db.prepare('DELETE FROM chapters').run()
-  db.prepare('DELETE FROM comics').run()
+  // Bug #19 修复: 包进事务, 避免 chapters 删了但 comics 没删
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM chapters').run()
+    db.prepare('DELETE FROM comics').run()
+  })
+  tx()
 }
 
 async function cleanupPureLocalComics() {

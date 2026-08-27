@@ -137,6 +137,12 @@ function createCrawlService({ db, sources, jobQueue }) {
         return { items, totalPages: result?.totalPages || 0, totalCount: result?.totalCount || 0 }
       } catch (e) {
         if (e.message === 'cancelled') return null
+        // Bug #21 修复: 404/403 是永久错误, 不重试
+        const msg = String(e?.message || e)
+        if (msg.includes('HTTP 404') || msg.includes('HTTP 403')) {
+          logger.warn(`[crawlService] 第 ${pageNum} 页永久错误, 不重试: ${msg}`)
+          return null
+        }
         const isConnReset = e.message?.includes('ECONNRESET')
         logger.warn(`[crawlService] 第 ${pageNum} 页第 ${retry + 1} 次失败:`, e.message)
         if (retry < maxRetries - 1) {

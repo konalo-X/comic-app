@@ -4,16 +4,17 @@
     @click="$emit('click')"
     @dblclick="$emit('dblclick')"
   >
-    <div class="card-thumb water-ripple">
+    <div class="card-thumb">
       <div v-if="skeleton" class="skeleton-thumb"></div>
       <template v-else>
         <img
-          v-if="coverUrl"
-          :src="coverUrl"
+          v-if="currentCoverUrl"
+          :src="currentCoverUrl"
           :alt="comic.title"
           class="thumb-img"
           loading="lazy"
           referrerpolicy="no-referrer"
+          @error="onCoverError"
         />
         <div v-else class="thumb-placeholder">
           <span class="thumb-letter">{{ (comic.title || '?')[0] }}</span>
@@ -65,7 +66,7 @@ EPUB放在漫画卡片的右下角，圆框框起来。        <!-- 状态图标
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   comic: { type: Object, default: null },
@@ -74,6 +75,9 @@ const props = defineProps({
   showCheckbox: { type: Boolean, default: false },
   progress: { type: Number, default: 0 }
 })
+
+// Bug #41 修复: 封面加载失败回退 - 跟踪是否已回退到在线封面
+const useOnlineFallback = ref(false)
 
 // 本地状态：local=已下载, update=有更新, online=仅在线
 const localStatus = computed(() => {
@@ -93,26 +97,49 @@ const updateBadgeText = computed(() => {
   return '有更新'
 })
 
-// 封面 URL：优先在线 cover（通过代理防盗链），回退到本地 local_cover
-const coverUrl = computed(() => {
+// 本地封面 URL（优先使用）
+const localCoverUrl = computed(() => {
   if (!props.comic) return ''
-  // 在线封面（通过代理解决防盗链）
-  if (props.comic.cover) {
-    const src = String(props.comic.cover)
-    if (src.startsWith('http://') || src.startsWith('https://')) {
-      // 通过图片代理加载，解决防盗链
-      return window.utils ? window.utils.toProxyUrl(src, src) : src
-    }
-    if (src.startsWith('data:')) return src
-    // 其他情况当成本地路径走代理
-    return window.utils ? window.utils.toLocalUrl(src) : src
-  }
-  // 回退到本地封面
   if (props.comic.local_cover) {
     const local = String(props.comic.local_cover)
     return window.utils ? window.utils.toLocalUrl(local) : local
   }
   return ''
+})
+
+// 在线封面 URL（回退使用）
+const onlineCoverUrl = computed(() => {
+  if (!props.comic) return ''
+  if (props.comic.cover) {
+    const src = String(props.comic.cover)
+    if (src.startsWith('http://') || src.startsWith('https://')) {
+      return window.utils ? window.utils.toProxyUrl(src, src) : src
+    }
+    if (src.startsWith('data:')) return src
+    return window.utils ? window.utils.toLocalUrl(src) : src
+  }
+  return ''
+})
+
+// 当前封面 URL：优先本地，加载失败回退在线
+const currentCoverUrl = computed(() => {
+  if (useOnlineFallback.value) {
+    return onlineCoverUrl.value || localCoverUrl.value
+  }
+  return localCoverUrl.value || onlineCoverUrl.value
+})
+
+// Bug #41 修复: 封面加载错误处理 - 从本地回退到在线
+function onCoverError(e) {
+  if (!useOnlineFallback.value && localCoverUrl.value && onlineCoverUrl.value) {
+    console.warn('[Cover] 本地封面加载失败，回退到在线封面')
+    useOnlineFallback.value = true
+  }
+}
+
+// 当漫画变化时重置回退状态
+watch(() => props.comic?.id || props.comic?.sourceUrl, () => {
+  useOnlineFallback.value = false
 })
 
 defineEmits(['click', 'dblclick', 'toggle-select', 'download'])
@@ -133,7 +160,6 @@ defineEmits(['click', 'dblclick', 'toggle-select', 'download'])
   animation: cardFadeIn 0.5s ease both;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.25s ease;
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(16px);
 }
 .comic-card:hover {
   transform: translateY(-4px);
@@ -284,7 +310,6 @@ defineEmits(['click', 'dblclick', 'toggle-select', 'download'])
   color: rgba(255,255,255,0.9);
   background: rgba(139, 92, 246, 0.35);
   border: 1px solid rgba(139, 92, 246, 0.6);
-  backdrop-filter: blur(4px);
   z-index: 3;
   text-shadow: 0 1px 2px rgba(0,0,0,0.3);
 }
@@ -328,7 +353,6 @@ defineEmits(['click', 'dblclick', 'toggle-select', 'download'])
   left: 6px;
   z-index: 5;
   background: rgba(26, 29, 41, 0.5);
-  backdrop-filter: blur(4px);
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
@@ -358,7 +382,6 @@ defineEmits(['click', 'dblclick', 'toggle-select', 'download'])
   height: 32px;
   border-radius: 50%;
   background: rgba(26, 29, 41, 0.7);
-  backdrop-filter: blur(4px);
   border: 1px solid rgba(255,255,255,0.15);
   color: #fff;
   display: flex;

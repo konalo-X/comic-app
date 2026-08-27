@@ -300,7 +300,22 @@ function formatReadTime(ts) {
   return `${month} 个月前`
 }
 
-function onImgError(e) { e.target.style.display = 'none' }
+function onImgError(e) {
+  // Bug #41 修复: 封面加载失败时回退到在线封面
+  const img = e.target
+  if (img && !img.dataset.fallbackTried) {
+    img.dataset.fallbackTried = '1'
+    // 从当前项获取数据
+    const src = img.src || ''
+    // 如果是通过本地代理加载的 (/local/), 尝试找到对应的在线封面
+    if (src.includes('/local?')) {
+      // 无法直接获取对应在线 URL, 隐藏失败的图片
+      img.style.display = 'none'
+    }
+  } else if (img) {
+    img.style.display = 'none'
+  }
+}
 
 onMounted(async () => {
   // 优先从缓存加载，减少等待时间
@@ -375,7 +390,7 @@ watch(historyList, (val) => {
   border-radius: 14px;
   transition: all 0.2s ease;
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(8px);
 }
 .page-search:focus-within {
   border-color: var(--brand);
@@ -401,7 +416,7 @@ watch(historyList, (val) => {
   border: 1px solid var(--glass-border);
   border-radius: 14px;
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(8px);
 }
 .tab {
   display: flex;

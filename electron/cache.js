@@ -8,8 +8,38 @@ const fs = require('fs')
 const crypto = require('crypto')
 const { app } = require('electron')
 
-const CACHE_ROOT = path.join(app.getPath('userData'), 'cache')
+const os = require('os')
+
+// 缓存根目录: 默认 userData/cache, 不可写时降级到系统缓存目录
+let CACHE_ROOT = path.join(app.getPath('userData'), 'cache')
 const MAX_SIZE = 2 * 1024 * 1024 * 1024 // 2GB
+
+function _resolveCacheRoot() {
+  const candidates = [
+    path.join(app.getPath('userData'), 'cache'),
+    path.join(app.getPath('cache'), 'comic-app'),
+    path.join(os.homedir(), '.comic-app-cache'),
+  ]
+  for (const dir of candidates) {
+    try {
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      // 写一个测试文件确认可写
+      const testFile = path.join(dir, '.write_test')
+      fs.writeFileSync(testFile, 'ok')
+      fs.unlinkSync(testFile)
+      if (dir !== CACHE_ROOT) {
+        console.log(`[Cache] 默认目录不可写, 降级到: ${dir}`)
+      }
+      return dir
+    } catch (e) {
+      console.warn(`[Cache] 目录不可写: ${dir} (${e.message})`)
+    }
+  }
+  // 全部失败, 用默认值兜底(至少能读)
+  return candidates[0]
+}
+
+CACHE_ROOT = _resolveCacheRoot()
 let meta = null // { entries: { [hash]: { size, lastAccess, url } }, totalSize, totalFiles }
 let metaDirty = false
 let metaTimer = null
@@ -213,9 +243,21 @@ async function warmup() {
   }
 }
 
+// Bug #37 修复: SIGTERM/SIGINT 直接 process.exit(0) 未清理 single-instance.lock,
+// 下次启动时因 lock 残留 PID 校验失败(虽有 PID alive 兜底但极端场景仍会误判)。
+// 在 exit 前同步清理锁文件。
+function _cleanupLockAndExit(code) {
+  try {
+    const { app } = require('electron')
+    const path = require('path')
+    const lockPath = path.join(app.getPath('userData'), 'single-instance.lock')
+    try { require('fs').unlinkSync(lockPath) } catch (_) {}
+  } catch (_) {}
+  process.exit(code)
+}
 process.on('exit', () => { if (metaDirty) { try { fs.writeFileSync(metaFile(), JSON.stringify(meta)) } catch (_) {} } })
-process.on('SIGTERM', () => { saveMetaSync(); process.exit(0) })
-process.on('SIGINT', () => { saveMetaSync(); process.exit(0) })
+process.on('SIGTERM', () => { saveMetaSync(); _cleanupLockAndExit(0) })
+process.on('SIGINT', () => { saveMetaSync(); _cleanupLockAndExit(0) })
 
 module.exports = {
   CACHE_ROOT,

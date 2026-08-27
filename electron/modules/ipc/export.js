@@ -47,7 +47,7 @@ function register(deps) {
   })
 
   ipcMain.handle('export:fromDownload', async (_, { comicTitle, format, chapters: clientChapters, meta, volumeMode, chaptersPerVolume, imageQuality: imgQuality }) => {
-    const root = findComicDir(comicTitle) || path.join(getPrimaryDownloadRoot(), sanitize(comicTitle))
+    const root = await findComicDir(comicTitle) || path.join(getPrimaryDownloadRoot(), sanitize(comicTitle))
     if (!fs.existsSync(root)) throw new Error(`下载目录不存在: ${root}`)
 
     let chapters = clientChapters
@@ -134,7 +134,7 @@ function register(deps) {
   })
 
   ipcMain.handle('export:getDownloadChapters', async (_, comicTitle) => {
-    const root = findComicDir(comicTitle) || path.join(getPrimaryDownloadRoot(), sanitize(comicTitle))
+    const root = await findComicDir(comicTitle) || path.join(getPrimaryDownloadRoot(), sanitize(comicTitle))
     if (!fs.existsSync(root)) return []
 
     const entries = fs.readdirSync(root, { withFileTypes: true })

@@ -61,6 +61,8 @@ contextBridge.exposeInMainWorld('sourceApi', {
 contextBridge.exposeInMainWorld('jobApi', {
   add: (type, payload, opts) => ipcRenderer.invoke('job:add', type, payload, opts || {}),
   cancel: (id) => ipcRenderer.invoke('job:cancel', id),
+  remove: (id) => ipcRenderer.invoke('job:remove', id),
+  removeAllDownloads: () => ipcRenderer.invoke('job:removeAllDownloads'),
   retry: (id) => ipcRenderer.invoke('job:retry', id),
   retryAll: () => ipcRenderer.invoke('job:retryAll'),
   clear: () => ipcRenderer.invoke('job:clear'),
@@ -89,17 +91,25 @@ contextBridge.exposeInMainWorld('exportApi', {
 })
 
 // ============ 工具函数 API ============
+// Bug #36/#38 修复: 之前用 ipcRenderer.sendSync('proxy:getPort') 同步阻塞渲染进程启动:
+//   1) sendSync 是同步阻塞 IPC, 主进程繁忙时渲染进程挂起白屏;
+//   2) 若主进程 ipcMain.on('proxy:getPort') 注册晚于 preload 执行, 返回 undefined, 前端全图加载失败。
+// 改为: 默认端口 48123 (和主进程代码中的端口保持一致), 异步 invoke 取实际端口后更新。
 const path = require('path')
-const { getLocalProxyUrl, getProxyImageUrl, toPlain, setProxyPort } = require(path.join(__dirname, 'utils', 'proxyUrl'))
-
-try {
-  const actualPort = ipcRenderer.sendSync('proxy:getPort')
-  if (actualPort && actualPort !== 48123) {
-    setProxyPort(actualPort)
-  }
-} catch (e) {
-  console.warn('[Preload] 获取代理端口失败:', e.message)
-}
+const { getLocalProxyUrl, getProxyImageUrl, toPlain, setProxyPort, getProxyPort } = require(path.join(__dirname, 'utils', 'proxyUrl'))
+const DEFAULT_PROXY_PORT = 48123
+// 先以默认端口初始化, 保证渲染进程首屏图片 URL 立即可用
+setProxyPort(DEFAULT_PROXY_PORT)
+// 异步从主进程拿实际端口 (主进程可能因端口冲突分配了其他端口)
+ipcRenderer.invoke('proxy:getPort-async')
+  .then((actualPort) => {
+    if (actualPort && typeof actualPort === 'number' && actualPort !== getProxyPort()) {
+      setProxyPort(actualPort)
+      // 通知渲染层端口已更新(如果有重新加载封面的需求)
+      try { ipcRenderer.sendToHost('proxy:port-updated', actualPort) } catch (_) {}
+    }
+  })
+  .catch((e) => console.warn('[Preload] 异步获取代理端口失败(使用默认端口):', e.message))
 
 contextBridge.exposeInMainWorld('utils', {
   toLocalUrl: getLocalProxyUrl,

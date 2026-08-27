@@ -57,18 +57,23 @@ async function updateComicListMeta(list) {
   let count = 0
   const updateWithTime = db.prepare(`UPDATE comics SET title=?, cover=?, category=COALESCE(NULLIF(?, ''), category), updateTime=MAX(COALESCE(updateTime,0),?), updatedAt=? WHERE id=?`)
   const updateWithoutTime = db.prepare(`UPDATE comics SET title=?, cover=?, category=COALESCE(NULLIF(?, ''), category), updatedAt=? WHERE id=?`)
-  for (const item of list) {
-    const existing = db.prepare('SELECT id FROM comics WHERE sourceUrl = ?').get(item.sourceUrl)
-    if (existing) {
-      const newUpdateTime = item.updateTime ? Number(item.updateTime) : null
-      if (newUpdateTime && newUpdateTime > 0) {
-        updateWithTime.run(item.title || '', item.cover || '', item.category || '', newUpdateTime, now, existing.id)
-      } else {
-        updateWithoutTime.run(item.title || '', item.cover || '', item.category || '', now, existing.id)
+  // Bug #24 修复: SELECT 提到循环外缓存 prepare; 整个循环包进事务保证原子性
+  const selStmt = db.prepare('SELECT id FROM comics WHERE sourceUrl = ?')
+  const tx = db.transaction(() => {
+    for (const item of list) {
+      const existing = selStmt.get(item.sourceUrl)
+      if (existing) {
+        const newUpdateTime = item.updateTime ? Number(item.updateTime) : null
+        if (newUpdateTime && newUpdateTime > 0) {
+          updateWithTime.run(item.title || '', item.cover || '', item.category || '', newUpdateTime, now, existing.id)
+        } else {
+          updateWithoutTime.run(item.title || '', item.cover || '', item.category || '', now, existing.id)
+        }
+        count++
       }
-      count++
     }
-  }
+  })
+  tx()
   return count
 }
 

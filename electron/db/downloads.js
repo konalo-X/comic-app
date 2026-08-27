@@ -2,6 +2,7 @@
 
 const fs = require('fs')
 const { ensureDb, insertDownloadRecord } = require('./helpers')
+const { existsAsync } = require('../modules/downloadPaths')
 
 // comic_id 归一化: 下载/同步链路里历史上会用 sourceUrl(http...) 当 comic_id 写记录,
 // 导致同一本漫画在 download_records 里出现 URL 型 + 内部 c_ 型两套重复记录。
@@ -82,7 +83,7 @@ async function cleanStaleDownloadRecords() {
   const rows = db.prepare('SELECT id, path FROM download_records WHERE path IS NOT NULL AND path != ""').all()
   let deleted = 0
   for (const row of rows) {
-    if (row.path && !fs.existsSync(row.path)) {
+    if (row.path && !(await existsAsync(row.path))) {
       db.prepare('DELETE FROM download_records WHERE id = ?').run(row.id)
       deleted++
     }

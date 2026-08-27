@@ -21,6 +21,11 @@ function normalizeComicTitle(value) {
   return String(value || '')
     .replace(/[\s\u3000]+/g, ' ')
     .replace(/[_\-+/\\]+/g, ' ')
+    // Bug #42 修复: 去掉常见的目录名去重后缀 (Finder 复制/解压/resolveUniqueComicDir 产生)
+    // 例如: "书名 2" "书名 (2)" "书名_1" "书名-2" "书名（2）"
+    // 在 normalize 之前先剥离, 避免 "找回自我 2" 和 "找回自我" 的 includes 模糊匹配误判串目录。
+    .replace(/[\s_\-（(]\s*\d+\s*[)）]?\s*$/g, ' ')
+    .replace(/[\s_\-]\s*\d+\s*$/g, ' ')
     .replace(/[^\w\u4e00-\u9fff]+/g, '')
     .trim()
 }

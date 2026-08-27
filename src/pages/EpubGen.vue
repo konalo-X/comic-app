@@ -294,7 +294,7 @@ h3 { font-size: 17px; font-weight: 600; margin-bottom: 16px; color: var(--text);
 .section { margin-bottom: 28px; }
 .loading-state { text-align: center; padding: 80px; color: var(--text-dim); }
 
-.source-tabs { display: flex; margin-bottom: 16px; background: rgba(255,255,255,0.86); padding: 6px; border-radius: var(--radius-lg); border: 1px solid rgba(255,255,255,0.76); backdrop-filter: blur(14px); }
+.source-tabs { display: flex; margin-bottom: 16px; background: rgba(255,255,255,0.86); padding: 6px; border-radius: var(--radius-lg); border: 1px solid rgba(255,255,255,0.76); backdrop-filter: blur(6px); }
 .source-tabs button { flex: 1; padding: 12px; border: none; cursor: pointer; border-radius: var(--radius); font-size: 14px; font-weight: 500; transition: all .25s cubic-bezier(0.4, 0, 0.2, 1); }
 .source-tabs button:not(.active) { color: var(--text-sub); background: transparent; }
 .source-tabs button:not(.active):hover { background: rgba(255,245,238,0.9); }
@@ -306,7 +306,7 @@ h3 { font-size: 17px; font-weight: 600; margin-bottom: 16px; color: var(--text);
 
 .empty-state { text-align: center; padding: 60px; color: var(--text-dim); }
 
-.comic-item { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid rgba(255,255,255,0.75); border-radius: var(--radius-lg); margin-bottom: 10px; cursor: pointer; background: rgba(255,255,255,0.84); transition: all .25s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: var(--shadow-sm); backdrop-filter: blur(14px); }
+.comic-item { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid rgba(255,255,255,0.75); border-radius: var(--radius-lg); margin-bottom: 10px; cursor: pointer; background: rgba(255,255,255,0.84); transition: all .25s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: var(--shadow-sm); backdrop-filter: blur(6px); }
 .comic-item:hover { border-color: var(--brand); transform: translateX(4px); box-shadow: var(--shadow); }
 .comic-item.selected { border-color: var(--brand); background: rgba(99, 102, 241, 0.05); }
 .comic-cover { width: 52px; height: 68px; border-radius: 8px; overflow: hidden; flex-shrink: 0; }

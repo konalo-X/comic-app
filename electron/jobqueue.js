@@ -1196,12 +1196,21 @@ class JobQueue {
       // sync 单轮扫多本漫画(每本 getDetail 最多 150s + enrichChapters 最多 240s), 5 分钟默认超时必然掐死.
       // 多处创建路径(addSyncJob 带 timeout, idle-sync/首次同步不带)导致 DB timeout 可能为 NULL,
       // 故在此统一兜底为 60 分钟, 与 addSyncJob 的设计意图一致(Bug: sync 被 300s 超时反复掐死).
-      sync: 60 * 60 * 1000
+      sync: 60 * 60 * 1000,
+      // Bug #46: downloadChapter 单章常有 100~165 张图, 走 hide.me 隧道 + 变体回退每图可能重试多个 CDN 主机,
+      // 默认 300s 超时下不完 -> 任务反复超时取消, 用户看到「能连但永远下不动」.
+      // 兜底 60 分钟, 让单章有充足时间下完(下载失败会自行 retry/变体回退, 不应被任务级超时掐死).
+      downloadChapter: 60 * 60 * 1000,
+      downloadComic: 60 * 60 * 1000,
+      autoEnrich: 60 * 60 * 1000
     }
     const jobTimeout = typeOverrides[type] || timeout || this._defaultTimeout
 
     const handlerPromise = handler({ id, type, priority, payload, cancelled: () => controller.cancelled }, onProgress)
-    handlerPromise.finally(() => {
+    // 关键修复: Promise.race 消费了 handlerPromise 后, 若其被 reject, 该 rejection
+    // 会成为「孤儿」(无人 await) 冒泡成 unhandledRejection, 被 main.js 兜底 process.exit(1)
+    // 直接杀进程 -> 连环闪退. 这里用 .catch(noop) 显式吸收, 真正的错误处理已在下方 try/catch.
+    handlerPromise.catch(() => {}).finally(() => {
       this._running.delete(id)
     })
 
@@ -1314,6 +1323,16 @@ class JobQueue {
     this._recordFailureStats(errorType)
 
     const newRetryCount = retryCount + 1
+    // 关键修复: 显式『已取消/超时』属于用户中断或系统调度, 不算失败,
+    // 不计入失败统计、不重投队列(否则取消任务会被反复拉起并再次崩溃).
+    const isCancel = controller._cancelled || controller.cancelled ||
+      /已取消|任务超时|任务被取消/.test(error)
+    if (isCancel) {
+      logger.info(`[JobQueue] 任务 ${id.substring(0, 8)} (${type}) 已取消/超时，视为正常终止，不计入失败`)
+      this._updateStatus(id, 'cancelled', { error })
+      this._emit('cancelled', { jobId: id, type, error })
+      return
+    }
     if (newRetryCount < maxRetries) {
       this._updateStatus(id, 'waiting', { retry_count: newRetryCount, error })
       this._waitingDirty = true
@@ -1353,9 +1372,17 @@ class JobQueue {
     if (!config) return
 
     const job = this.db.prepare(
-      `SELECT auto_retry_count, updated_at FROM job_queue WHERE id = ?`
+      `SELECT auto_retry_count, updated_at, error FROM job_queue WHERE id = ?`
     ).get(id)
     if (!job) return
+
+    // Bug #21 修复: 永久错误(404/403)不自动重试, 避免浪费时间重试不存在的资源
+    const errMsg = String(job.error || '')
+    if (errMsg.includes('HTTP 404') || errMsg.includes('HTTP 403') ||
+        errMsg.includes('permanent_not_found') || errMsg.includes('permanent_forbidden')) {
+      logger.info(`[JobQueue] ${type} 永久错误, 跳过自动重试: ${errMsg.substring(0, 100)}`)
+      return
+    }
 
     const autoRetryCount = job.auto_retry_count || 0
     const maxAutoRetries = config.maxAutoRetries || 3
@@ -1381,7 +1408,7 @@ class JobQueue {
   _retryFailedJobs() {
     const now = Date.now()
     const rows = this.db.prepare(
-      `SELECT id, type, auto_retry_count, updated_at FROM job_queue
+      `SELECT id, type, auto_retry_count, updated_at, error FROM job_queue
        WHERE status = 'failed'
        ORDER BY updated_at ASC LIMIT 100`
     ).all()
@@ -1390,6 +1417,13 @@ class JobQueue {
     for (const r of rows) {
       const config = this.autoRetryConfig[r.type]
       if (!config) continue
+
+      // Bug #21 修复: 永久错误(404/403)跳过自动重试
+      const errMsg = String(r.error || '')
+      if (errMsg.includes('HTTP 404') || errMsg.includes('HTTP 403') ||
+          errMsg.includes('permanent_not_found') || errMsg.includes('permanent_forbidden')) {
+        continue
+      }
 
       const maxAutoRetries = config.maxAutoRetries || 3
       const autoRetryCount = r.auto_retry_count || 0
@@ -1483,13 +1517,6 @@ class JobQueue {
       clearInterval(this._dynamicConcurrencyTimer)
       this._dynamicConcurrencyTimer = null
     }
-  }
-
-  destroy() {
-    this._stopHeartbeat()
-    this._stopDynamicConcurrency()
-    if (this._maintenanceTimer) { clearInterval(this._maintenanceTimer); this._maintenanceTimer = null }
-    if (this._progressFlushTimer) { clearInterval(this._progressFlushTimer); this._progressFlushTimer = null }
   }
 
   /**
@@ -1623,17 +1650,26 @@ class JobQueue {
     return Array.from(this._active.keys())
   }
 
+  // Bug #9 修复: destroy() 之前被定义两次（后者覆盖前者），导致从未调用 _stopHeartbeat，heartbeatTimer 永久泄漏
+  // 合并两次定义的清理动作：完整停止所有定时器 + 清空内部 Map
   destroy() {
+    this._stopHeartbeat()
+    this._stopDynamicConcurrency()
+    this._stopProgressFlushTimer()
     if (this._maintenanceTimer) {
       clearInterval(this._maintenanceTimer)
       this._maintenanceTimer = null
     }
-    this._stopDynamicConcurrency()
-    this._stopProgressFlushTimer()
-    this._pendingProgress.clear()
-    this._active.clear()
-    this._running.clear()
-    this.listeners.clear()
+    if (this._progressFlushTimer) {
+      clearInterval(this._progressFlushTimer)
+      this._progressFlushTimer = null
+    }
+    if (this._pendingProgress) this._pendingProgress.clear()
+    if (this._active) this._active.clear()
+    if (this._running) this._running.clear()
+    if (this.listeners) this.listeners.clear()
+    // 标记已销毁，防止后续事件触发操作
+    this._destroyed = true
   }
 }
 

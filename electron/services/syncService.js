@@ -73,6 +73,24 @@ function createSyncService({ db, sources, jobQueue }) {
       }
     }
 
+    // ============ Bug 修复 (2026-08-17): 每轮 sync 后归零 + 以磁盘回填 ============
+    // A) update_delta 归零(仅当本轮无新章节时): 之前只在"单章下载完成且完整"时
+    //    resetUpdateDelta, 但常驻下载 worker 缺失会导致 sync 任务 waiting、reset
+    //    不触发, 于是 delta 在多次 sync 间保留旧值 → 看上去"每天都有新增 134话"(重复计数)。
+    //    修复: 本轮 sync 处理完该漫画后, 若没有发现新章节(hasNewChapters=false),
+    //    说明 delta 是旧值/扫描残留, 直接归零; 若确有新章则保留 delta 交给下载
+    //    worker 在下载完整后再归零(保持原语义, 不抹掉"待读新章"提示)。
+    if (!hasNewChapters) {
+      try { await db.resetUpdateDelta(comic.sourceUrl) } catch (_) {}
+    }
+
+    // B) image_count 以磁盘为准回填: 覆盖之前只写"源站应有数"导致的失真,
+    //    让 DB 与磁盘一致, 既可用于"是否真下载"判断, 也避免 0 图章被无限当待补扫描。
+    const localPath = comic.local_path || (comic.localPath)
+    if (localPath) {
+      try { await db.reconcileImageCounts(comic._id || comic.id, localPath) } catch (_) {}
+    }
+
     return { enriched, updated, newChapterCount, detail, hasNewChapters, needsEnrich }
   }
 

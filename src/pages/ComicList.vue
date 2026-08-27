@@ -16,7 +16,7 @@
         <a :class="['head-tab', { active: activeSort === 'hits' }]" href="javascript:;" @click="activeSort = 'hits'">按阅读</a>
       </div>
       <div class="head-actions">
-        <button class="text-btn" :disabled="crawlState.crawling || crawlState.enriching || crawlState.checking || clearing" @click="clearAll">{{ clearing ? '清空中...' : '清空' }}</button>
+        <button class="text-btn" :disabled="crawlState.crawling || crawlState.enriching || crawlState.checking || crawlState.enrichingChapterNames || clearing" @click="clearAll">{{ clearing ? '清空中...' : '清空' }}</button>
         <button class="text-btn text-btn-primary" :disabled="crawlState.crawling || crawlState.enriching || crawlState.checking || crawlState.enrichingChapterNames" @click="startCrawl">
           {{ buttonText }}
         </button>
@@ -33,7 +33,7 @@
       <span v-if="categoryStatsText" class="head-count stats-text">{{ categoryStatsText }}</span>
     </div>
 
-    <div v-if="crawlState.crawling || crawlState.enriching || crawlState.checking" class="crawl-status card water-ripple" :class="{ 'is-checking': crawlState.checking }">
+    <div v-if="crawlState.crawling || crawlState.enriching || crawlState.checking || crawlState.enrichingChapterNames" class="crawl-status card water-ripple" :class="{ 'is-checking': crawlState.checking }">
       <div class="progress-bar">
         <div class="fill" :class="{ checking: crawlState.checking }" :style="{ width: crawlState.progress + '%' }"></div>
       </div>
@@ -211,7 +211,10 @@ async function batchDelete() {
     await window.batchApi?.delete(ids)
     selectedIds.value = new Set()
     loadPage(page.value, true)
-  } catch (e) { console.error('batch delete error:', e) }
+  } catch (e) {
+    console.error('batch delete error:', e)
+    window.dispatchEvent(new CustomEvent('toast', { detail: `批量删除失败: ${e.message}` }))
+  }
   finally { batchProcessing.value = false }
 }
 
@@ -721,7 +724,7 @@ onUnmounted(() => {
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(8px);
 }
 .empty-icon {
   width: 80px;

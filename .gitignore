@@ -35,3 +35,9 @@ mmexport*.jpg
 # CodeGraph 本地索引（含图谱数据库，禁止入库）
 .codegraph/
 .codegraph
+
+# _test_/_diag_ 调试脚本(本地排查用, 不入版本库)
+_diag_*.js
+_test_*.js
+_t.cjs
+$DB

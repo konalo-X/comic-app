@@ -105,38 +105,42 @@ function register(deps) {
     if (!normDir) return null
 
     try {
-      const r1 = raw.exec('SELECT DISTINCT comic_id, comic_title FROM download_records')
-      if (r1.length > 0) {
-        for (const row of r1[0].values) {
+      // Bug #6 修复: raw.exec(sql, params) 是 sql.js API 误用
+      // better-sqlite3: prepare(...).all() 返回对象数组; .raw().all() 返回值数组
+      const rows1 = raw.prepare('SELECT DISTINCT comic_id, comic_title FROM download_records').raw().all()
+      if (rows1 && rows1.length > 0) {
+        for (const row of rows1) {
           const [comicId, comicTitle] = row
           if (_normName(String(comicTitle || '')) === normDir) {
-            const r2 = raw.exec(
-              'SELECT name, sort_order FROM chapters WHERE comic_id = ? ORDER BY sort_order',
-              [comicId]
-            )
-            const chapters = r2.length > 0 ? r2[0].values.map(v => ({ name: v[0], index: v[1] })) : []
+            const rows2 = raw.prepare(
+              'SELECT name, sort_order FROM chapters WHERE comic_id = ? ORDER BY sort_order'
+            ).raw().all(comicId)
+            const chapters = rows2 ? rows2.map(v => ({ name: v[0], index: v[1] })) : []
             return { comicId, title: comicTitle, chapters }
           }
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      console.warn('[import] _matchComicInDB 第一段查询失败:', e.message)
+    }
 
     try {
-      const r3 = raw.exec('SELECT id, title FROM comics')
-      if (r3.length > 0) {
-        for (const row of r3[0].values) {
+      const rows3 = raw.prepare('SELECT id, title FROM comics').raw().all()
+      if (rows3 && rows3.length > 0) {
+        for (const row of rows3) {
           const [comicId, title] = row
           if (_normName(String(title || '')) === normDir) {
-            const r4 = raw.exec(
-              'SELECT name, sort_order FROM chapters WHERE comic_id = ? ORDER BY sort_order',
-              [comicId]
-            )
-            const chapters = r4.length > 0 ? r4[0].values.map(v => ({ name: v[0], index: v[1] })) : []
+            const rows4 = raw.prepare(
+              'SELECT name, sort_order FROM chapters WHERE comic_id = ? ORDER BY sort_order'
+            ).raw().all(comicId)
+            const chapters = rows4 ? rows4.map(v => ({ name: v[0], index: v[1] })) : []
             return { comicId, title, chapters }
           }
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      console.warn('[import] _matchComicInDB 第二段查询失败:', e.message)
+    }
 
     return null
   }

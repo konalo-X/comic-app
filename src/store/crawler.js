@@ -87,6 +87,10 @@ function initListeners() {
   })
 
   window.crawlerApi.onEnrichProgress((data) => {
+    // enrich 任务 progress payload: { current, total, msg }
+    if (data.total && data.current != null) {
+      state.progress = Math.round((data.current / data.total) * 100)
+    }
     state.message = data.msg || state.message
     notifyRefresh()
   })
@@ -108,7 +112,17 @@ function initListeners() {
   })
 
   window.crawlerApi.onUpdateProgress((data) => {
-    state.message = data.msg || state.message
+    // sync 任务的 progress payload: { current, total, title, skipped?, error? }
+    if (data.total && data.current != null) {
+      state.progress = Math.round((data.current / data.total) * 100)
+    }
+    if (data.error) {
+      state.message = `检查更新出错: ${data.error}（继续处理其他漫画...）`
+    } else if (data.title) {
+      state.message = `正在检查: ${data.title} (${data.current}/${data.total})`
+    } else if (data.msg) {
+      state.message = data.msg
+    }
     notifyRefresh()
   })
 
@@ -127,6 +141,10 @@ function initListeners() {
 
   // 章节增强事件（详情页链接文本 → 内容页 h2 + 图片数补全）
   window.crawlerApi.onEnrichChaptersProgress((data) => {
+    // 章节增强 progress payload: { chapterIndex, totalChapters, title }
+    if (data.totalChapters && data.chapterIndex != null) {
+      state.progress = Math.round((data.chapterIndex / data.totalChapters) * 100)
+    }
     state.message = `正在章节增强 › ${data?.title || ''} (${data?.chapterIndex || 0}/${data?.totalChapters || 0})`
     notifyRefresh()
   })

@@ -22,7 +22,7 @@ async function enrichChapters(comic, chaptersToEnrich, source, cancelledFn = nul
   return getEnrichService().enrichChapters(comic, chaptersToEnrich, source, cancelledFn)
 }
 
-function addSyncJob(priority = 3) {
+function addSyncJob(priority = 4) {
   if (!jobQueue || !jobQueue.db) {
     console.warn('[Sync] 队列未初始化，无法添加 sync 任务')
     return null
@@ -42,10 +42,12 @@ function addSyncJob(priority = 3) {
   } catch (e) {
     console.warn('[Sync] 检查已有 sync 任务失败:', e.message)
   }
-  const checkRateLimit = priority >= 2
+  const checkRateLimit = priority >= 3
+  // source 推断: priority<=2 为手动触发(enrich/checkUpdates), >2 为自动调度
+  const source = priority <= 2 ? 'manual' : 'auto'
   // sync 单轮可能扫多本漫画(每本 getDetail 最多 150s + enrichChapters 最多 240s),
   // 给宽松总超时避免慢源站时整轮被截断(默认 5min 太短)。
-  return jobQueue.add('sync', {}, { priority, maxRetries: 3, checkRateLimit, timeout: 60 * 60 * 1000 })
+  return jobQueue.add('sync', {}, { priority, maxRetries: 3, checkRateLimit, timeout: 60 * 60 * 1000, source })
 }
 
 function getJobQueue() {

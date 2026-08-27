@@ -22,6 +22,7 @@ function createDownloadService({ db, sources, jobQueue }) {
 
     const total = pageList.length
     let downloaded = 0
+    const failedImages = []
 
     for (let i = 0; i < total; i++) {
       if (cancelled()) return { success: false, cancelled: true, downloaded }
@@ -31,7 +32,11 @@ function createDownloadService({ db, sources, jobQueue }) {
         downloaded++
         onProgress({ current: i + 1, total, chapter: chapter.name })
       } catch (e) {
-        if (e.message === 'cancelled') return { success: false, cancelled: true, downloaded }
+        const msg = String(e?.message || e)
+        if (msg === 'cancelled') return { success: false, cancelled: true, downloaded }
+        // Bug #15 修复: 收集失败图片信息, 不再静默吞掉
+        console.warn(`[下载] 图片下载失败 ${comicTitle} › ${chapter.name} 第${i + 1}页: ${msg}`)
+        failedImages.push({ index: i + 1, error: msg })
       }
 
       if (i < total - 1) {
@@ -39,6 +44,10 @@ function createDownloadService({ db, sources, jobQueue }) {
       }
     }
 
+    // Bug #15 修复: 有失败图片时 success=false
+    if (failedImages.length > 0) {
+      return { success: false, downloaded, total, failedImages, failedCount: failedImages.length }
+    }
     return { success: true, downloaded, total }
   }
 

@@ -7,7 +7,7 @@ const db = require('../../db')
 const { sleep } = require('../../utils')
 const {
   findComicDir, getPrimaryDownloadRoot,
-  downloadChapterImages, checkComicHealth, downloadBuf
+  downloadChapterImages, checkComicHealth, downloadBuf, existsAsync
 } = require('../downloadPaths')
 const sharpPool = require('../sharpPool')
 const { getJobQueue } = require('./helpers')
@@ -21,11 +21,11 @@ async function autoRepairDownloadedComics() {
     let enqueued = 0
 
     for (const comic of comics) {
-      if (!comic.local_path || !fs.existsSync(comic.local_path)) continue
+      if (!comic.local_path) continue
       if (!comic.sourceUrl) continue
 
       const comicDir = comic.local_path
-      if (!fs.existsSync(comicDir)) continue
+      if (!(await existsAsync(comicDir))) continue
 
       const health = await checkComicHealth(comicDir)
       if (health.healthy) continue
@@ -40,7 +40,7 @@ async function autoRepairDownloadedComics() {
         comicTitle: comic.title,
         comicDir: comic.local_path,
         deepCheck: false
-      }, { priority: 3 })
+      }, { priority: 5, source: 'auto' })
       enqueued++
     }
 
@@ -62,13 +62,13 @@ async function jobHandlerRepairComic(job, onProgress) {
   const comic = await db.getComicByUrl(sourceUrl)
   if (!comic) throw new Error(`未找到漫画: ${sourceUrl}`)
 
-  const comicDir = payloadComicDir || comic.local_path || findComicDir(comic.title, sourceUrl)
-  if (!comicDir || !fs.existsSync(comicDir)) {
+  const comicDir = payloadComicDir || comic.local_path || await findComicDir(comic.title, sourceUrl)
+  if (!comicDir || !(await existsAsync(comicDir))) {
     throw new Error(`漫画目录不存在: ${comicDir}`)
   }
 
   const downloadRoot = getPrimaryDownloadRoot()
-  if (downloadRoot.startsWith('/Volumes/') && !fs.existsSync(downloadRoot)) {
+  if (downloadRoot.startsWith('/Volumes/') && !(await existsAsync(downloadRoot))) {
     throw new Error(`下载磁盘未挂载: ${downloadRoot}`)
   }
 
@@ -130,8 +130,8 @@ async function jobHandlerRepairComic(job, onProgress) {
     }
 
     const chDir = path.join(comicDir, ch.dirName)
-    if (!fs.existsSync(chDir)) {
-      fs.mkdirSync(chDir, { recursive: true })
+    if (!(await existsAsync(chDir))) {
+      await fs.promises.mkdir(chDir, { recursive: true })
     }
 
     try {
