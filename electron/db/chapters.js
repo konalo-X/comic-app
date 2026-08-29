@@ -177,7 +177,11 @@ const fs = require('fs')
 
 async function reconcileImageCounts(comicId, localPath) {
   const db = ensureDb()
-  if (!localPath || !fs.existsSync(localPath)) return 0
+  // 关键修复: 之前用同步 fs.existsSync(localPath) 判存在——local_path 在可移动磁盘(AFP/SMB)
+  // 上时, 每次 sync 扫全库都会在主线程发起上万次同步 stat syscall, 卡死主线程
+  // (uv_fs_stat -> uv_mutex 死锁 -> abort 崩溃, 见 08-29 12:50 崩溃报告)。
+  if (!localPath) return 0
+  try { await fs.promises.access(localPath) } catch (_) { return 0 }
 
   // 取该漫画所有章节 (id, name, sort_order) 用于磁盘目录匹配
   const rows = db.prepare(
@@ -188,7 +192,7 @@ async function reconcileImageCounts(comicId, localPath) {
   // 章节磁盘目录命名形如 "12-第12话" 或 "12"，用 sort_order+1 前缀匹配
   let dirEntries = []
   try {
-    dirEntries = fs.readdirSync(localPath, { withFileTypes: true })
+    dirEntries = (await fs.promises.readdir(localPath, { withFileTypes: true }))
       .filter(e => e.isDirectory() && !e.name.startsWith('.'))
   } catch (_) {
     return 0
@@ -196,30 +200,32 @@ async function reconcileImageCounts(comicId, localPath) {
   const dirByName = new Set(dirEntries.map(e => e.name))
 
   const IMG_RE = /\.(webp|jpg|jpeg|png|gif|avif|bmp)$/i
-  const updateStmt = db.prepare('UPDATE chapters SET image_count = ? WHERE id = ?')
-  let changed = 0
-  const tx = db.transaction(() => {
-    for (const r of rows) {
-      // 候选目录: 优先 "sort_order+1-xxx"，其次 "sort_order+1"
-      const idx = r.sort_order + 1
-      let dirName = null
-      const named = `${idx}-${r.name}`
-      if (dirByName.has(named)) dirName = named
-      else if (dirByName.has(String(idx))) dirName = String(idx)
-      else {
-        const fallback = dirEntries.find(e => e.name === String(idx) || e.name.startsWith(`${idx}-`))
-        if (fallback) dirName = fallback.name
-      }
-      if (!dirName) continue
-      const chDir = path.join(localPath, dirName)
-      let count = 0
-      try {
-        count = fs.readdirSync(chDir).filter(f => IMG_RE.test(f)).length
-      } catch (_) { count = 0 }
-      updateStmt.run(count, r.id)
-      changed++
+
+  // 关键修复: 先异步收集每章真实图数(扫外部网络盘走 fs.promises, 不卡主线程),
+  // 再一次性同步事务写库。不能在 db.transaction 回调里 await (事务闭包非 async)。
+  const counts = [] // [{ id, count }]
+  for (const r of rows) {
+    // 候选目录: 优先 "sort_order+1-xxx"，其次 "sort_order+1"
+    const idx = r.sort_order + 1
+    let dirName = null
+    const named = `${idx}-${r.name}`
+    if (dirByName.has(named)) dirName = named
+    else if (dirByName.has(String(idx))) dirName = String(idx)
+    else {
+      const fallback = dirEntries.find(e => e.name === String(idx) || e.name.startsWith(`${idx}-`))
+      if (fallback) dirName = fallback.name
     }
-  })
+    if (!dirName) continue
+    const chDir = path.join(localPath, dirName)
+    let count = 0
+    try {
+      count = (await fs.promises.readdir(chDir)).filter(f => IMG_RE.test(f)).length
+    } catch (_) { count = 0 }
+    counts.push({ id: r.id, count })
+  }
+
+  const updateStmt = db.prepare('UPDATE chapters SET image_count = ? WHERE id = ?')
+  const tx = db.transaction(() => { for (const c of counts) { updateStmt.run(c.count, c.id) } })
   tx()
-  return changed
+  return counts.length
 }

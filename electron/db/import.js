@@ -40,7 +40,7 @@ async function checkExistingByTitle(titles) {
 }
 
 async function scanLocalComics(dirPath) {
-  if (!fs.existsSync(dirPath)) return []
+  try { await fs.promises.access(dirPath) } catch (_) { return [] }
 
   const IMG_EXT = /\.(webp|jpg|jpeg|png|gif|avif|bmp)$/i
   const chapterDirPattern = /(^\d+-)|(^第\d+)|(^(ch(apter)?[_\-]?)?\d+)/i
@@ -119,7 +119,7 @@ async function scanLocalComics(dirPath) {
 
     let cover = null
     const coverPath = path.join(comicDir, 'cover.webp')
-    if (fs.existsSync(coverPath)) {
+    if (await fs.promises.access(coverPath).then(()=>true).catch(()=>false)) {
       cover = coverPath
     }
 
@@ -150,11 +150,11 @@ async function scanLocalComics(dirPath) {
 async function importLocalComic(comic, targetRoot, sourceUrl, destDir) {
   const db = ensureDb()
   const titleDir = destDir || path.join(targetRoot, core.sanitizeFilename(comic.title))
-  if (!fs.existsSync(titleDir)) fs.mkdirSync(titleDir, { recursive: true })
+  try { await fs.promises.access(titleDir) } catch (_) { await fs.promises.mkdir(titleDir, { recursive: true }) }
 
   if (comic.coverPath) {
     const srcPath = comic.coverPath.replace('file://', '')
-    if (fs.existsSync(srcPath)) {
+    if (await fs.promises.access(srcPath).then(()=>true).catch(()=>false)) {
       fs.copyFileSync(srcPath, path.join(titleDir, 'cover.webp'))
     }
   }
@@ -164,9 +164,9 @@ async function importLocalComic(comic, targetRoot, sourceUrl, destDir) {
     const ch = comic.chapters[i]
     const folderName = `${i + 1}-${core.sanitizeFilename(ch.name)}`
     const destDir = path.join(titleDir, folderName)
-    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true })
+    try { await fs.promises.access(destDir) } catch (_) { await fs.promises.mkdir(destDir, { recursive: true }) }
 
-    const srcFiles = fs.readdirSync(ch.path).filter(f => /\.(webp|jpg|png)$/i.test(f)).sort()
+    const srcFiles = (await fs.promises.readdir(ch.path)).filter(f => /\.(webp|jpg|png)$/i.test(f)).sort()
     for (const f of srcFiles) {
       fs.copyFileSync(path.join(ch.path, f), path.join(destDir, f))
     }
@@ -198,7 +198,7 @@ async function importLocalComic(comic, targetRoot, sourceUrl, destDir) {
       })
     } else {
       const coverOnDisk = path.join(titleDir, 'cover.webp')
-      const localCoverPath = fs.existsSync(coverOnDisk) ? coverOnDisk : (comic.coverPath || '')
+      const localCoverPath = (await fs.promises.access(coverOnDisk).then(()=>true).catch(()=>false)) ? coverOnDisk : (comic.coverPath || '')
       db.prepare('INSERT OR IGNORE INTO comics (id, sourceUrl, title, cover, local_cover, status, chapter_count, favorited, local_path, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(
         id, sourceUrl || null, comic.title, '', localCoverPath, '连载中', comic.chapters.length, 1, targetRoot, now, now
       )
@@ -210,7 +210,7 @@ async function importLocalComic(comic, targetRoot, sourceUrl, destDir) {
     }
   } else {
     const coverOnDisk2 = path.join(titleDir, 'cover.webp')
-    const localCoverPath2 = fs.existsSync(coverOnDisk2) ? coverOnDisk2 : (comic.coverPath || '')
+    const localCoverPath2 = (await fs.promises.access(coverOnDisk2).then(() => true).catch(() => false)) ? coverOnDisk2 : (comic.coverPath || '')
     db.prepare('INSERT OR IGNORE INTO comics (id, sourceUrl, title, cover, local_cover, status, chapter_count, favorited, local_path, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(
       id, null, comic.title, '', localCoverPath2, '连载中', comic.chapters.length, 1, targetRoot, now, now
     )
@@ -483,7 +483,7 @@ async function autoScanLocalComics(paths, sources, onProgress) {
   console.log(`[autoScan] 数据库中有 ${dbComics.length} 本漫画，${dbComics.filter(c => c.sourceUrl).length} 个有 sourceUrl`)
 
   for (const scanPath of paths) {
-    if (!fs.existsSync(scanPath)) {
+    try { await fs.promises.access(scanPath) } catch (_) {
       console.warn(`[autoScan] 路径不存在: ${scanPath}`)
       continue
     }
@@ -554,7 +554,7 @@ async function autoScanLocalComics(paths, sources, onProgress) {
 }
 
 async function importLocalComics(dirPath, onProgress) {
-  if (!fs.existsSync(dirPath)) {
+  try { await fs.promises.access(dirPath) } catch (_) {
     throw new Error('目录不存在: ' + dirPath)
   }
 

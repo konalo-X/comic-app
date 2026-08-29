@@ -593,7 +593,7 @@ function registerAllIPC(deps) {
 
   ipcMain.handle('cache:fixDiskNames', async () => {
     const EXTERNAL_ROOT = getExternalRoot()
-    if (!fs.existsSync(EXTERNAL_ROOT)) {
+    try { await fs.promises.access(EXTERNAL_ROOT) } catch (_) {
       return { success: false, error: `目录不存在: ${EXTERNAL_ROOT}` }
     }
 
@@ -610,7 +610,7 @@ function registerAllIPC(deps) {
     }
 
     try {
-      const entries = fs.readdirSync(EXTERNAL_ROOT, { withFileTypes: true })
+      const entries = await fs.promises.readdir(EXTERNAL_ROOT, { withFileTypes: true })
       for (const entry of entries) {
         if (!entry.isDirectory()) continue
         report.scannedDirs++
@@ -643,7 +643,7 @@ function registerAllIPC(deps) {
         }
 
         try {
-          const chEntries = fs.readdirSync(currentComicPath, { withFileTypes: true })
+          const chEntries = await fs.promises.readdir(currentComicPath, { withFileTypes: true })
           const chapterDirs = chEntries
             .filter(e => e.isDirectory())
             .map(e => e.name)
@@ -688,7 +688,7 @@ function registerAllIPC(deps) {
 
   ipcMain.handle('cache:scanDiskNames', async () => {
     const EXTERNAL_ROOT = getExternalRoot()
-    if (!fs.existsSync(EXTERNAL_ROOT)) {
+    try { await fs.promises.access(EXTERNAL_ROOT) } catch (_) {
       return { success: false, error: `目录不存在: ${EXTERNAL_ROOT}` }
     }
 
@@ -699,7 +699,7 @@ function registerAllIPC(deps) {
     }
 
     try {
-      const entries = fs.readdirSync(EXTERNAL_ROOT, { withFileTypes: true })
+      const entries = await fs.promises.readdir(EXTERNAL_ROOT, { withFileTypes: true })
       for (const entry of entries) {
         if (!entry.isDirectory()) continue
         result.totalComics++
@@ -710,12 +710,12 @@ function registerAllIPC(deps) {
         let hasCover = false
 
         try {
-          const chEntries = fs.readdirSync(comicDir, { withFileTypes: true })
+          const chEntries = await fs.promises.readdir(comicDir, { withFileTypes: true })
           for (const ch of chEntries) {
             if (ch.isDirectory()) {
               let chImgs = 0
               try {
-                const files = fs.readdirSync(path.join(comicDir, ch.name))
+                const files = await fs.promises.readdir(path.join(comicDir, ch.name))
                 chImgs = files.filter(f => /\.(webp|jpg|jpeg|png|gif)$/i.test(f)).length
               } catch (_) {}
               chDirs.push({ name: ch.name, imageCount: chImgs })
@@ -743,7 +743,7 @@ function registerAllIPC(deps) {
 
   ipcMain.handle('cache:analyzeDiskNames', async (_, limit = 20) => {
     const EXTERNAL_ROOT = getExternalRoot()
-    if (!fs.existsSync(EXTERNAL_ROOT)) {
+    try { await fs.promises.access(EXTERNAL_ROOT) } catch (_) {
       return { success: false, error: `目录不存在: ${EXTERNAL_ROOT}` }
     }
 
@@ -756,7 +756,7 @@ function registerAllIPC(deps) {
     }
 
     try {
-      const entries = fs.readdirSync(EXTERNAL_ROOT, { withFileTypes: true })
+      const entries = await fs.promises.readdir(EXTERNAL_ROOT, { withFileTypes: true })
       const comicDirs = entries.filter(e => e.isDirectory()).map(e => e.name)
       analysis.total = comicDirs.length
 
@@ -776,7 +776,7 @@ function registerAllIPC(deps) {
           const detail = await source.getDetail(bestMatch.url)
           const realChapters = (detail?.chapters || []).slice(0, 15)
 
-          const chDirsOnDisk = fs.readdirSync(path.join(EXTERNAL_ROOT, dirName), { withFileTypes: true })
+          const chDirsOnDisk = await fs.promises.readdir(path.join(EXTERNAL_ROOT, dirName), { withFileTypes: true })
             .filter(e => e.isDirectory())
             .map(e => e.name)
             .slice(0, 15)
@@ -824,7 +824,7 @@ function registerAllIPC(deps) {
   ipcMain.handle('disk:organizeOrphanChapters', async () => {
     try {
       const root = getPrimaryDownloadRoot()
-      if (!fs.existsSync(root)) {
+      try { await fs.promises.access(root) } catch (_) {
         return { success: false, error: `目录不存在: ${root}` }
       }
 
@@ -835,7 +835,7 @@ function registerAllIPC(deps) {
         errors: []
       }
 
-      const entries = fs.readdirSync(root, { withFileTypes: true })
+      const entries = await fs.promises.readdir(root, { withFileTypes: true })
       for (const entry of entries) {
         if (!entry.isDirectory()) continue
         result.scanned++
@@ -847,7 +847,7 @@ function registerAllIPC(deps) {
         if (!isChapterFormat) continue
 
         try {
-          const subEntries = fs.readdirSync(dirPath, { withFileTypes: true })
+          const subEntries = await fs.promises.readdir(dirPath, { withFileTypes: true })
           const hasSubDirs = subEntries.some(e => e.isDirectory())
           if (hasSubDirs) continue
 
@@ -873,12 +873,12 @@ function registerAllIPC(deps) {
 
           if (matchedComic && matchedComic.title) {
             const comicDir = path.join(root, sanitize(matchedComic.title))
-            if (!fs.existsSync(comicDir)) {
-              fs.mkdirSync(comicDir, { recursive: true })
+            try { await fs.promises.access(comicDir) } catch (_) {
+              await fs.promises.mkdir(comicDir, { recursive: true })
             }
             const targetPath = path.join(comicDir, dirName)
 
-            if (fs.existsSync(targetPath)) {
+            if (await fs.promises.access(targetPath).then(()=>true).catch(()=>false)) {
               result.errors.push(`目标已存在，跳过: ${dirName} -> ${matchedComic.title}`)
               continue
             }
