@@ -1,6 +1,7 @@
 'use strict'
 
 const fs = require('fs')
+const safeFs = require('../modules/safeFs')
 const core = require('./core')
 const { ensureDb } = require('./helpers')
 
@@ -66,7 +67,7 @@ async function getDownloadSize() {
   let total = 0
   for (const p of paths) {
     let stat
-    try { stat = await fs.promises.stat(p) } catch (_) { continue }
+    try { stat = await safeFs.stat(p) } catch (_) { continue }
     if (stat.isDirectory()) {
       total += await core.getDirectorySize(p)
     } else if (stat.isFile()) {

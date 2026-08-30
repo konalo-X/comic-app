@@ -1,6 +1,7 @@
 'use strict'
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('./safeFs')
 const https = require('https')
 const http = require('http')
 const url = require('url')
@@ -207,7 +208,7 @@ async function downloadBufWithVariantFallback(imageUrl, referer, timeoutMs = 300
 
 // 主线程异步判存在助手: 避免热路径(可移动磁盘)同步 fs.existsSync 卡死主线程导致 abort。
 async function existsAsync(p) {
-  try { await fs.promises.stat(p); return true } catch (_) { return false }
+  try { await safeFs.stat(p); return true } catch (_) { return false }
 }
 
 function getDownloadRoots() {
@@ -260,7 +261,7 @@ async function resolveUniqueComicDir(preferredPath, sourceUrl) {
   // 预订机制 (2026-07-27): 选定目录后立即 mkdir + 回写 local_path。
   // 否则两本同名漫画并发解析时(目录都还不存在)会拿到同一路径串本。
   const reserve = async (p) => {
-    try { await fs.promises.mkdir(p, { recursive: true }) } catch (_) {}
+    try { await safeFs.mkdir(p, { recursive: true }) } catch (_) {}
     if (sourceUrl) {
       try {
         const raw = db.getRawDB()
@@ -381,7 +382,7 @@ async function findComicDir(title, sourceUrl) {
 
   for (const root of getDownloadRoots()) {
     try {
-      const entries = await fs.promises.readdir(root, { withFileTypes: true })
+      const entries = await safeFs.readdir(root, { withFileTypes: true })
       const matchedDirs = []
       for (const e of entries) {
         if (!e.isDirectory()) continue
@@ -452,7 +453,7 @@ async function findChapterDir(comicDir, chapterIndex, chapterName, usedDirs) {
   }
 
   const used = usedDirs || new Set()
-  const entries = (await fs.promises.readdir(comicDir, { withFileTypes: true }))
+  const entries = (await safeFs.readdir(comicDir, { withFileTypes: true }))
     .filter(e => e.isDirectory() && !used.has(path.join(comicDir, e.name)))
 
   const exactByName = entries.find(e => {
@@ -555,7 +556,7 @@ async function findChapterDir(comicDir, chapterIndex, chapterName, usedDirs) {
 
 async function listChapterImages(chapterDir) {
   if (!chapterDir || !(await existsAsync(chapterDir))) return []
-  const files = (await fs.promises.readdir(chapterDir)).filter(f =>
+  const files = (await safeFs.readdir(chapterDir)).filter(f =>
     /\.(webp|jpg|jpeg|png|gif|avif|bmp)$/i.test(f)
   )
   files.sort((a, b) => {
@@ -579,7 +580,7 @@ function detectBufferFormat(buffer) {
 
 async function detectFileFormat(filePath) {
   // Bug #11 修复: fs.openSync 后如果 readSync 抛错, fd 会泄漏; 用 try/finally 确保 close
-  const fd = await fs.promises.open(filePath, 'r')
+  const fd = await safeFs.open(filePath, 'r')
   try {
     const header = Buffer.alloc(12)
     await fd.read(header, 0, 12, 0)
@@ -632,7 +633,7 @@ async function loadSharpCache(chDir) {
   const p = getSharpCachePath(chDir)
   try {
     // 直接尝试读, 文件不存在/解析失败都返回空缓存; 不再用同步 fs.existsSync+readFileSync
-    return JSON.parse(await fs.promises.readFile(p, 'utf8')) || {}
+    return JSON.parse(await safeFs.readFile(p, 'utf8')) || {}
   } catch (_) {}
   return {}
 }
@@ -642,8 +643,8 @@ async function saveSharpCache(chDir, cache) {
     // Bug #20 修复: 原子写 — 先写 .tmp 再 rename
     const finalPath = getSharpCachePath(chDir)
     const tmpPath = finalPath + '.tmp'
-    await fs.promises.writeFile(tmpPath, JSON.stringify(cache))
-    await fs.promises.rename(tmpPath, finalPath)
+    await safeFs.writeFile(tmpPath, JSON.stringify(cache))
+    await safeFs.rename(tmpPath, finalPath)
   } catch (e) {
     console.warn(`[下载] 保存 sharp 缓存失败: ${e.message}`)
   }
@@ -651,7 +652,7 @@ async function saveSharpCache(chDir, cache) {
 
 async function fileFingerprint(filePath) {
   try {
-    const st = await fs.promises.stat(filePath)
+    const st = await safeFs.stat(filePath)
     return { size: st.size, mtime: Math.round(st.mtimeMs) }
   } catch (_) {
     return null
@@ -722,7 +723,7 @@ function getChapterStatePath(chDir) {
 async function loadChapterState(chDir) {
   const p = getChapterStatePath(chDir)
   try {
-    const state = JSON.parse(await fs.promises.readFile(p, 'utf8'))
+    const state = JSON.parse(await safeFs.readFile(p, 'utf8'))
     return state
   } catch (e) {
     console.warn(`[下载] 读取章节状态失败: ${e.message}`)
@@ -735,8 +736,8 @@ async function saveChapterState(chDir, state) {
     // Bug #20 修复: 原子写 — 先写 .tmp 再 rename, 防止崩溃时产生截断 JSON
     const finalPath = getChapterStatePath(chDir)
     const tmpPath = finalPath + '.tmp'
-    await fs.promises.writeFile(tmpPath, JSON.stringify(state, null, 2))
-    await fs.promises.rename(tmpPath, finalPath)
+    await safeFs.writeFile(tmpPath, JSON.stringify(state, null, 2))
+    await safeFs.rename(tmpPath, finalPath)
   } catch (e) {
     console.warn(`[下载] 保存章节状态失败: ${e.message}`)
   }
@@ -935,7 +936,7 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
       if (actualFormat !== 'webp') {
         console.warn(`[下载] 图片格式不正确(${actualFormat})，重新转换: ${outPath}`)
         const webpBuf = await sharpPool.webpConvertToBuffer(buf, { quality: 85 })
-        await fs.promises.writeFile(outPath, webpBuf)
+        await safeFs.writeFile(outPath, webpBuf)
       }
       downloaded++
       if (!state.completedIndices.includes(imageIndex)) {
@@ -973,7 +974,7 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
     try {
       const statePath = getChapterStatePath(chDir)
       if (await existsAsync(statePath)) {
-        await fs.promises.unlink(statePath)
+        await safeFs.unlink(statePath)
         try { console.log(`[下载] 章节完成，清理状态文件: ${chapterName}`) } catch {}
       }
     } catch (e) {}
@@ -1015,7 +1016,7 @@ async function downloadAndConvert(url, filePath, referer) {
       if (actualFormat !== 'webp') {
         console.warn(`[下载] 图片格式不正确(${actualFormat})，重新转换: ${filePath}`)
         const webpBuf = await sharpPool.webpConvertToBuffer(buffer, { quality: 85 })
-        await fs.promises.writeFile(filePath, webpBuf)
+        await safeFs.writeFile(filePath, webpBuf)
       }
       return byteLength
     } catch (e) { if (i === 2) throw e; await sleep(1000 * (i + 1)) }
@@ -1157,7 +1158,7 @@ async function checkChapterHealth(chapterDir, options = {}) {
   let emptyCount = 0
   for (const f of allFiles) {
     try {
-      const stat = await fs.promises.stat(f)
+      const stat = await safeFs.stat(f)
       if (stat.size === 0) {
         emptyCount++
         issues.push({ type: 'empty_file', file: f, message: `空文件: ${path.basename(f)}` })
@@ -1205,7 +1206,7 @@ async function checkComicHealth(comicDir, options = {}) {
     return { healthy: false, chapters: [], message: '漫画目录不存在' }
   }
 
-  const entries = await fs.promises.readdir(comicDir, { withFileTypes: true })
+  const entries = await safeFs.readdir(comicDir, { withFileTypes: true })
   const chapterDirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.'))
 
   let missingCover = false
@@ -1318,7 +1319,7 @@ async function resolveComicDir(comicTitle, sourceUrl, payloadComicDir) {
     throw new Error(`漫画目录路径无效，与下载根目录相同: ${dir}`)
   }
   if (!(await existsAsync(dir))) {
-    await fs.promises.mkdir(dir, { recursive: true })
+    await safeFs.mkdir(dir, { recursive: true })
   }
   return dir
 }

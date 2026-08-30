@@ -3,6 +3,7 @@ const http = require('http')
 const url = require('url')
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('./safeFs')
 
 const cache = require('../cache')
 const sources = require('../sources/registry')
@@ -33,7 +34,7 @@ async function _validateLocalPath(localPath) {
     if (_allowedLocalDirs.length === 0) return { status: 'deny', reason: 'whitelist-empty' }
     // 必须是真实存在的文件(异步,避免主线程扫外部盘)
     let stat
-    try { stat = await fs.promises.stat(resolved) } catch (_) { return { status: 'placeholder' } }
+    try { stat = await safeFs.stat(resolved) } catch (_) { return { status: 'placeholder' } }
     if (!stat.isFile()) return { status: 'deny', reason: 'not-a-file' }
     // 只允许图片后缀
     const ext = path.extname(resolved).toLowerCase()
@@ -53,7 +54,7 @@ async function _validateLocalPath(localPath) {
 async function fetchAndCacheImage(imageUrl, refererUrl) {
   const cached = cache.getCachedPath(imageUrl)
   if (cached) {
-    return fs.promises.readFile(cached)
+    return safeFs.readFile(cached)
   }
 
   if (inflightRequests.has(imageUrl)) {
@@ -138,7 +139,7 @@ function startImageProxyServer() {
                      ext === '.gif' ? 'image/gif' : ext === '.svg' ? 'image/svg+xml' :
                      ext === '.avif' ? 'image/avif' : ext === '.bmp' ? 'image/bmp' : 'image/jpeg'
           try {
-            const stat = await fs.promises.stat(v.resolved)
+            const stat = await safeFs.stat(v.resolved)
             res.writeHead(200, {
               'Content-Type': ct,
               'Content-Length': stat.size,
@@ -189,7 +190,7 @@ function startImageProxyServer() {
         const ext = path.extname(imageUrl).toLowerCase().replace(/\?.*/, '') || '.jpg'
         const ct = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : ext === '.svg' ? 'image/svg+xml' : 'image/jpeg'
         try {
-          const stat = await fs.promises.stat(cachedPath)
+          const stat = await safeFs.stat(cachedPath)
           res.writeHead(200, {
             'Content-Type': ct,
             'Content-Length': stat.size,

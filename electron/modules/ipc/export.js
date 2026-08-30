@@ -2,6 +2,7 @@
 
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('../safeFs')
 const { sanitizeFilename: sanitize } = require('../../utils')
 
 function register(deps) {
@@ -20,19 +21,19 @@ function register(deps) {
     const seen = new Set()
     const comics = []
     for (const root of roots) {
-      try { await fs.promises.access(root) } catch (_) { continue }
-      const entries = await fs.promises.readdir(root, { withFileTypes: true })
+      try { await safeFs.access(root) } catch (_) { continue }
+      const entries = await safeFs.readdir(root, { withFileTypes: true })
       for (const e of entries) {
         if (!e.isDirectory()) continue
         const dirKey = `${root}/${e.name}`
         if (seen.has(dirKey)) continue
         seen.add(dirKey)
         const comicDir = path.join(root, e.name)
-        const chEntries = await fs.promises.readdir(comicDir, { withFileTypes: true })
+        const chEntries = await safeFs.readdir(comicDir, { withFileTypes: true })
           .filter(d => d.isDirectory() && /^\d+-/.test(d.name))
         let cover = null
         const coverPath = path.join(comicDir, 'cover.webp')
-        if (await fs.promises.access(coverPath).then(()=>true).catch(()=>false)) cover = 'file://' + coverPath
+        if (await safeFs.access(coverPath).then(()=>true).catch(()=>false)) cover = 'file://' + coverPath
         comics.push({
           id: e.name,
           title: e.name,
@@ -48,11 +49,11 @@ function register(deps) {
 
   ipcMain.handle('export:fromDownload', async (_, { comicTitle, format, chapters: clientChapters, meta, volumeMode, chaptersPerVolume, imageQuality: imgQuality }) => {
     const root = await findComicDir(comicTitle) || path.join(getPrimaryDownloadRoot(), sanitize(comicTitle))
-    try { await fs.promises.access(root) } catch (_) { throw new Error(`下载目录不存在: ${root}`) }
+    try { await safeFs.access(root) } catch (_) { throw new Error(`下载目录不存在: ${root}`) }
 
     let chapters = clientChapters
     if (!chapters || !chapters.length) {
-      const entries = await fs.promises.readdir(root, { withFileTypes: true })
+      const entries = await safeFs.readdir(root, { withFileTypes: true })
       chapters = entries
         .filter(e => e.isDirectory() && /^\d+-/.test(e.name))
         .sort((a, b) => {
@@ -135,9 +136,9 @@ function register(deps) {
 
   ipcMain.handle('export:getDownloadChapters', async (_, comicTitle) => {
     const root = await findComicDir(comicTitle) || path.join(getPrimaryDownloadRoot(), sanitize(comicTitle))
-    try { await fs.promises.access(root) } catch (_) { return [] }
+    try { await safeFs.access(root) } catch (_) { return [] }
 
-    const entries = await fs.promises.readdir(root, { withFileTypes: true })
+    const entries = await safeFs.readdir(root, { withFileTypes: true })
     const chapters = entries
       .filter(e => e.isDirectory() && /^\d+-/.test(e.name))
       .sort((a, b) => {

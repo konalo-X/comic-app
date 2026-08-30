@@ -2,6 +2,7 @@
 
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('../safeFs')
 const sources = require('../../sources/registry')
 const db = require('../../db')
 const { sleep } = require('../../utils')
@@ -131,7 +132,7 @@ async function jobHandlerRepairComic(job, onProgress) {
 
     const chDir = path.join(comicDir, ch.dirName)
     if (!(await existsAsync(chDir))) {
-      await fs.promises.mkdir(chDir, { recursive: true })
+      await safeFs.mkdir(chDir, { recursive: true })
     }
 
     try {

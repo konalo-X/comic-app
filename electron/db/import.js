@@ -2,6 +2,7 @@
 
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('../modules/safeFs')
 const crypto = require('crypto')
 const core = require('./core')
 const downloads = require('./downloads')
@@ -40,14 +41,14 @@ async function checkExistingByTitle(titles) {
 }
 
 async function scanLocalComics(dirPath) {
-  try { await fs.promises.access(dirPath) } catch (_) { return [] }
+  try { await safeFs.access(dirPath) } catch (_) { return [] }
 
   const IMG_EXT = /\.(webp|jpg|jpeg|png|gif|avif|bmp)$/i
   const chapterDirPattern = /(^\d+-)|(^第\d+)|(^(ch(apter)?[_\-]?)?\d+)/i
   const MAX_COMICS = 50000
   const MAX_CHAPTERS_PER_COMIC = 2000
 
-  const entries = await fs.promises.readdir(dirPath, { withFileTypes: true })
+  const entries = await safeFs.readdir(dirPath, { withFileTypes: true })
   const comics = []
 
   const sortByNumber = (arr) => {
@@ -74,7 +75,7 @@ async function scanLocalComics(dirPath) {
     const comicDir = path.join(dirPath, e.name)
     let subs
     try {
-      subs = await fs.promises.readdir(comicDir, { withFileTypes: true })
+      subs = await safeFs.readdir(comicDir, { withFileTypes: true })
     } catch { continue }
 
     let chapterDirs = subs.filter(d => d.isDirectory() && chapterDirPattern.test(d.name))
@@ -84,7 +85,7 @@ async function scanLocalComics(dirPath) {
         if (!d.isDirectory()) continue
         const chDir = path.join(comicDir, d.name)
         try {
-          const files = await fs.promises.readdir(chDir)
+          const files = await safeFs.readdir(chDir)
           if (files.some(f => IMG_EXT.test(f))) candidates.push(d)
         } catch {}
       }
@@ -102,7 +103,7 @@ async function scanLocalComics(dirPath) {
       const chDir = path.join(comicDir, d.name)
       let imageFiles
       try {
-        imageFiles = (await fs.promises.readdir(chDir)).filter(f => IMG_EXT.test(f))
+        imageFiles = (await safeFs.readdir(chDir)).filter(f => IMG_EXT.test(f))
       } catch { continue }
       sortByNumber(imageFiles)
       const cleanName = d.name
@@ -119,7 +120,7 @@ async function scanLocalComics(dirPath) {
 
     let cover = null
     const coverPath = path.join(comicDir, 'cover.webp')
-    if (await fs.promises.access(coverPath).then(()=>true).catch(()=>false)) {
+    if (await safeFs.access(coverPath).then(()=>true).catch(()=>false)) {
       cover = coverPath
     }
 
@@ -150,11 +151,11 @@ async function scanLocalComics(dirPath) {
 async function importLocalComic(comic, targetRoot, sourceUrl, destDir) {
   const db = ensureDb()
   const titleDir = destDir || path.join(targetRoot, core.sanitizeFilename(comic.title))
-  try { await fs.promises.access(titleDir) } catch (_) { await fs.promises.mkdir(titleDir, { recursive: true }) }
+  try { await safeFs.access(titleDir) } catch (_) { await safeFs.mkdir(titleDir, { recursive: true }) }
 
   if (comic.coverPath) {
     const srcPath = comic.coverPath.replace('file://', '')
-    if (await fs.promises.access(srcPath).then(()=>true).catch(()=>false)) {
+    if (await safeFs.access(srcPath).then(()=>true).catch(()=>false)) {
       fs.copyFileSync(srcPath, path.join(titleDir, 'cover.webp'))
     }
   }
@@ -164,9 +165,9 @@ async function importLocalComic(comic, targetRoot, sourceUrl, destDir) {
     const ch = comic.chapters[i]
     const folderName = `${i + 1}-${core.sanitizeFilename(ch.name)}`
     const destDir = path.join(titleDir, folderName)
-    try { await fs.promises.access(destDir) } catch (_) { await fs.promises.mkdir(destDir, { recursive: true }) }
+    try { await safeFs.access(destDir) } catch (_) { await safeFs.mkdir(destDir, { recursive: true }) }
 
-    const srcFiles = (await fs.promises.readdir(ch.path)).filter(f => /\.(webp|jpg|png)$/i.test(f)).sort()
+    const srcFiles = (await safeFs.readdir(ch.path)).filter(f => /\.(webp|jpg|png)$/i.test(f)).sort()
     for (const f of srcFiles) {
       fs.copyFileSync(path.join(ch.path, f), path.join(destDir, f))
     }
@@ -198,7 +199,7 @@ async function importLocalComic(comic, targetRoot, sourceUrl, destDir) {
       })
     } else {
       const coverOnDisk = path.join(titleDir, 'cover.webp')
-      const localCoverPath = (await fs.promises.access(coverOnDisk).then(()=>true).catch(()=>false)) ? coverOnDisk : (comic.coverPath || '')
+      const localCoverPath = (await safeFs.access(coverOnDisk).then(()=>true).catch(()=>false)) ? coverOnDisk : (comic.coverPath || '')
       db.prepare('INSERT OR IGNORE INTO comics (id, sourceUrl, title, cover, local_cover, status, chapter_count, favorited, local_path, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(
         id, sourceUrl || null, comic.title, '', localCoverPath, '连载中', comic.chapters.length, 1, targetRoot, now, now
       )
@@ -210,7 +211,7 @@ async function importLocalComic(comic, targetRoot, sourceUrl, destDir) {
     }
   } else {
     const coverOnDisk2 = path.join(titleDir, 'cover.webp')
-    const localCoverPath2 = (await fs.promises.access(coverOnDisk2).then(() => true).catch(() => false)) ? coverOnDisk2 : (comic.coverPath || '')
+    const localCoverPath2 = (await safeFs.access(coverOnDisk2).then(() => true).catch(() => false)) ? coverOnDisk2 : (comic.coverPath || '')
     db.prepare('INSERT OR IGNORE INTO comics (id, sourceUrl, title, cover, local_cover, status, chapter_count, favorited, local_path, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(
       id, null, comic.title, '', localCoverPath2, '连载中', comic.chapters.length, 1, targetRoot, now, now
     )
@@ -483,7 +484,7 @@ async function autoScanLocalComics(paths, sources, onProgress) {
   console.log(`[autoScan] 数据库中有 ${dbComics.length} 本漫画，${dbComics.filter(c => c.sourceUrl).length} 个有 sourceUrl`)
 
   for (const scanPath of paths) {
-    try { await fs.promises.access(scanPath) } catch (_) {
+    try { await safeFs.access(scanPath) } catch (_) {
       console.warn(`[autoScan] 路径不存在: ${scanPath}`)
       continue
     }
@@ -554,7 +555,7 @@ async function autoScanLocalComics(paths, sources, onProgress) {
 }
 
 async function importLocalComics(dirPath, onProgress) {
-  try { await fs.promises.access(dirPath) } catch (_) {
+  try { await safeFs.access(dirPath) } catch (_) {
     throw new Error('目录不存在: ' + dirPath)
   }
 

@@ -2,6 +2,7 @@
 
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('../modules/safeFs')
 const Database = require('better-sqlite3')
 const { sanitizeFilename, normalizeName, normalizeTitle } = require('../utils')
 const { runMigrations } = require('./migrations')
@@ -321,11 +322,11 @@ function rowToComic(row, opts = {}) {
 async function getDirectorySize(dirPath) {
   let total = 0
   let entries
-  try { entries = await fs.promises.readdir(dirPath) } catch (_) { return 0 }
+  try { entries = await safeFs.readdir(dirPath) } catch (_) { return 0 }
   for (const entry of entries) {
     const entryPath = path.join(dirPath, entry)
     try {
-      const stat = await fs.promises.stat(entryPath)
+      const stat = await safeFs.stat(entryPath)
       if (stat.isDirectory()) {
         total += await getDirectorySize(entryPath)
       } else if (stat.isFile()) {

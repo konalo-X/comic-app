@@ -174,6 +174,7 @@ module.exports = {
 // 让 DB 与磁盘一致。返回实际回填的章节数。
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('../modules/safeFs')
 
 async function reconcileImageCounts(comicId, localPath) {
   const db = ensureDb()
@@ -181,7 +182,7 @@ async function reconcileImageCounts(comicId, localPath) {
   // 上时, 每次 sync 扫全库都会在主线程发起上万次同步 stat syscall, 卡死主线程
   // (uv_fs_stat -> uv_mutex 死锁 -> abort 崩溃, 见 08-29 12:50 崩溃报告)。
   if (!localPath) return 0
-  try { await fs.promises.access(localPath) } catch (_) { return 0 }
+  try { await safeFs.access(localPath) } catch (_) { return 0 }
 
   // 取该漫画所有章节 (id, name, sort_order) 用于磁盘目录匹配
   const rows = db.prepare(
@@ -192,7 +193,7 @@ async function reconcileImageCounts(comicId, localPath) {
   // 章节磁盘目录命名形如 "12-第12话" 或 "12"，用 sort_order+1 前缀匹配
   let dirEntries = []
   try {
-    dirEntries = (await fs.promises.readdir(localPath, { withFileTypes: true }))
+    dirEntries = (await safeFs.readdir(localPath, { withFileTypes: true }))
       .filter(e => e.isDirectory() && !e.name.startsWith('.'))
   } catch (_) {
     return 0
@@ -219,7 +220,7 @@ async function reconcileImageCounts(comicId, localPath) {
     const chDir = path.join(localPath, dirName)
     let count = 0
     try {
-      count = (await fs.promises.readdir(chDir)).filter(f => IMG_RE.test(f)).length
+      count = (await safeFs.readdir(chDir)).filter(f => IMG_RE.test(f)).length
     } catch (_) { count = 0 }
     counts.push({ id: r.id, count })
   }

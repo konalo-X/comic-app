@@ -2,6 +2,7 @@
 
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('../safeFs')
 const sharpPool = require('../sharpPool')
 const { app } = require('electron')
 const sources = require('../../sources/registry')
@@ -87,7 +88,7 @@ async function downloadChapterCore(job, comicDir, chapter, chapterIndex, comicTi
   const folder = sanitize(`${chapterIndex + 1}-${chapterName}`)
   const chDir = path.join(comicDir, folder)
   try {
-    if (!(await existsAsync(chDir))) await fs.promises.mkdir(chDir, { recursive: true })
+    if (!(await existsAsync(chDir))) await safeFs.mkdir(chDir, { recursive: true })
   } catch (e) {
     throw new Error(`创建章节目录失败 (${chDir}): ${e.message || e}`)
   }

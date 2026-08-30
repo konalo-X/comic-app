@@ -2,6 +2,7 @@
 
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('../safeFs')
 const { sanitizeFilename: sanitize } = require('../../utils')
 
 function register(deps) {
@@ -203,7 +204,7 @@ function register(deps) {
     const comicDir = await findComicDir(comicTitle, sourceUrl)
     if (comicDir) {
       try {
-        const dirEntries = (await fs.promises.readdir(comicDir, { withFileTypes: true }))
+        const dirEntries = (await safeFs.readdir(comicDir, { withFileTypes: true }))
           .filter(e => e.isDirectory())
         diskChapterCount = dirEntries.length
       } catch (_) {}
@@ -279,7 +280,7 @@ function register(deps) {
       const comicDir = await findComicDir(comicTitle, sourceUrl)
       if (!comicDir) return []
       try {
-        const entries = (await fs.promises.readdir(comicDir, { withFileTypes: true }))
+        const entries = (await safeFs.readdir(comicDir, { withFileTypes: true }))
           .filter(e => e.isDirectory())
         const indices = []
         for (const e of entries) {
@@ -505,9 +506,9 @@ function register(deps) {
       let reportPath = null
       try {
         const logDir = path.join(app.getPath('userData'), 'logs')
-        await fs.promises.mkdir(logDir, { recursive: true })
+        await safeFs.mkdir(logDir, { recursive: true })
         reportPath = path.join(logDir, `health-report-${Date.now()}.json`)
-        await fs.promises.writeFile(reportPath, JSON.stringify({ generatedAt: new Date().toISOString(), summary, issues }, null, 2))
+        await safeFs.writeFile(reportPath, JSON.stringify({ generatedAt: new Date().toISOString(), summary, issues }, null, 2))
       } catch (_) {}
 
       return {

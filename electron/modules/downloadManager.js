@@ -2,6 +2,7 @@
 
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('./safeFs')
 const { sanitizeFilename: sanitize } = require('../utils')
 const sources = require('../sources/registry')
 const {
@@ -25,11 +26,11 @@ class DownloadManager {
   getStatePath(comicDir) { return path.join(comicDir, '.download_state.json') }
   async loadState(comicDir, title) {
     const p = this.getStatePath(comicDir)
-    try { if (await existsAsync(p)) return JSON.parse(await fs.promises.readFile(p, 'utf8')) } catch {}
+    try { if (await existsAsync(p)) return JSON.parse(await safeFs.readFile(p, 'utf8')) } catch {}
     return null
   }
   async saveState(comicDir, title, state) {
-    try { await fs.promises.writeFile(this.getStatePath(comicDir), JSON.stringify(state, null, 2)) } catch {}
+    try { await safeFs.writeFile(this.getStatePath(comicDir), JSON.stringify(state, null, 2)) } catch {}
   }
 
   async downloadComic(comicData, win) {
@@ -51,7 +52,7 @@ class DownloadManager {
       comicId: sourceUrl, title, totalChapters: chapters.length,
       completedChapters: [], completedImages: 0, startTime: Date.now()
     }
-    if (!(await existsAsync(comicDir))) await fs.promises.mkdir(comicDir, { recursive: true })
+    if (!(await existsAsync(comicDir))) await safeFs.mkdir(comicDir, { recursive: true })
 
     const src = sources.default
     let successImages = state.completedImages, failedChapters = 0
@@ -107,7 +108,7 @@ class DownloadManager {
         if (!images?.length) { failedChapters++; continue }
         const folderName = `${i + 1}-${sanitize(chapterName)}`
         const chDir = path.join(comicDir, folderName)
-        if (!(await existsAsync(chDir))) await fs.promises.mkdir(chDir, { recursive: true })
+        if (!(await existsAsync(chDir))) await safeFs.mkdir(chDir, { recursive: true })
         if (!state._dirs) state._dirs = {}
         state._dirs[i] = chDir
 
@@ -137,7 +138,7 @@ class DownloadManager {
               continue
             }
             // 文件损坏，删除后重新下载
-            try { await fs.promises.unlink(outPath) } catch (_) {}
+            try { await safeFs.unlink(outPath) } catch (_) {}
           }
 
           try {
@@ -169,7 +170,7 @@ class DownloadManager {
         if (chState.completedIndices.length >= images.length) {
           try {
             const statePath = getChapterStatePath(chDir)
-            if (await existsAsync(statePath)) await fs.promises.unlink(statePath)
+            if (await existsAsync(statePath)) await safeFs.unlink(statePath)
           } catch (_) {}
         }
 

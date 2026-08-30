@@ -1,6 +1,7 @@
 'use strict'
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('./modules/safeFs')
 const AdmZip = require('adm-zip')
 const sharpPool = require('./modules/sharpPool')
 const { sanitizeFilename: sanitize } = require('./utils')
@@ -38,8 +39,8 @@ class ArchiveExporter {
 
     // 如果有封面
     const coverPath = path.join(sourceDir, 'cover.webp')
-    if (await fs.promises.access(coverPath).then(()=>true).catch(()=>false)) {
-      zip.addFile('cover.webp', await fs.promises.readFile(coverPath))
+    if (await safeFs.access(coverPath).then(()=>true).catch(()=>false)) {
+      zip.addFile('cover.webp', await safeFs.readFile(coverPath))
       fileCount++
     }
 
@@ -49,12 +50,12 @@ class ArchiveExporter {
       const chDir = (ch.dir && path.isAbsolute(ch.dir))
         ? ch.dir
         : path.join(sourceDir, ch.dir || `${i + 1}-${sanitize(ch.name)}`)
-      try { await fs.promises.access(chDir) } catch (_) {
+      try { await safeFs.access(chDir) } catch (_) {
         console.warn(`[CBZ] 章节目录不存在，跳过: ${chDir}`)
         continue
       }
 
-      const files = (await fs.promises.readdir(chDir))
+      const files = (await safeFs.readdir(chDir))
         .filter(f => /\.(webp|jpg|jpeg|png|gif)$/i.test(f))
         .sort()
 
@@ -63,7 +64,7 @@ class ArchiveExporter {
         // 用 3 位数字前缀 + 章节序号保证全局排序正确
         // 格式: ch${章节序号三维}_${图片序号三维}.webp
         const zipName = `ch${String(i + 1).padStart(3, '0')}_${String(j + 1).padStart(4, '0')}.webp`
-        zip.addFile(zipName, await fs.promises.readFile(filePath))
+        zip.addFile(zipName, await safeFs.readFile(filePath))
         fileCount++
       }
 
@@ -74,7 +75,7 @@ class ArchiveExporter {
 
     // 写文件
     zip.writeZip(outputPath)
-    console.log(`[CBZ] 导出完成: ${outputPath} (${fileCount} 张图片, ${((await fs.promises.stat(outputPath)).size / 1024 / 1024).toFixed(1)} MB)`)
+    console.log(`[CBZ] 导出完成: ${outputPath} (${fileCount} 张图片, ${((await safeFs.stat(outputPath)).size / 1024 / 1024).toFixed(1)} MB)`)
 
     // 写元数据
     this._writeComicInfo(outputPath, { title, chapters: chapters.length })
@@ -173,8 +174,8 @@ class ArchiveExporter {
     // ---------- 2. 封面 ----------
     const coverPath = path.join(sourceDir, 'cover.webp')
     let coverAdded = false
-    if (await fs.promises.access(coverPath).then(()=>true).catch(()=>false)) {
-      let coverBuf = await fs.promises.readFile(coverPath)
+    if (await safeFs.access(coverPath).then(()=>true).catch(()=>false)) {
+      let coverBuf = await safeFs.readFile(coverPath)
       let coverFormat = detectImageFormat(coverBuf)
       if (coverFormat !== 'webp') {
         try {
@@ -197,9 +198,9 @@ class ArchiveExporter {
       const chDir = ch.dir && path.isAbsolute(ch.dir)
         ? ch.dir
         : path.join(sourceDir, ch.dir || `${ch.index + 1 || i + 1}-${sanitize(ch.name)}`)
-      try { await fs.promises.access(chDir) } catch (_) { continue }
+      try { await safeFs.access(chDir) } catch (_) { continue }
 
-      const files = (await fs.promises.readdir(chDir))
+      const files = (await safeFs.readdir(chDir))
         .filter(f => /\.(webp|jpg|jpeg|png|gif)$/i.test(f))
         .sort((a, b) => {
           const na = parseInt(a.match(/^(\d+)/)?.[1] || '0', 10)
@@ -216,7 +217,7 @@ class ArchiveExporter {
         const srcPath = path.join(chDir, files[j])
         const imgFileName = `${chFolderName}_${String(j + 1).padStart(3, '0')}.webp`
 
-        let imgBuffer = await fs.promises.readFile(srcPath)
+        let imgBuffer = await safeFs.readFile(srcPath)
         let actualFormat = detectImageFormat(imgBuffer)
 
         if (actualFormat !== 'webp') {
@@ -288,7 +289,7 @@ class ArchiveExporter {
 
     // 写入文件
     zip.writeZip(outputPath)
-    console.log(`[EPUB] 导出完成: ${outputPath} (${((await fs.promises.stat(outputPath)).size / 1024 / 1024).toFixed(1)} MB)`)
+    console.log(`[EPUB] 导出完成: ${outputPath} (${((await safeFs.stat(outputPath)).size / 1024 / 1024).toFixed(1)} MB)`)
     return outputPath
   }
 

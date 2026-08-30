@@ -2,6 +2,7 @@
 
 const path = require('path')
 const fs = require('fs')
+const safeFs = require('./safeFs')
 const { app, BrowserWindow, protocol } = require('electron')
 const { initAutoUpdater } = require('./updater')
 const logger = require('../logger')
@@ -39,7 +40,7 @@ async function startup(deps) {
       if (resolved !== cacheDir && !resolved.startsWith(prefix)) {
         return new Response('', { status: 400 })
       }
-      const data = await fs.promises.readFile(resolved)
+      const data = await safeFs.readFile(resolved)
       return new Response(data)
     } catch {
       return new Response('', { status: 404 })
