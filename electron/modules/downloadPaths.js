@@ -226,15 +226,26 @@ function getDownloadRoots() {
 }
 
 // 外部盘挂载状态缓存(避免热路径每次同步 existsSync 网络盘)
+// 关键修复: 热路径(getDownloadRoots)每 30s 会撞上 TTL 过期, 旧代码同步 fs.existsSync(EXTERNAL_ROOT)
+// 扫网络盘 -> 底层 uv_fs_stat 在主线程卡死 -> SIGABRT (2026-08-31 19:01 崩溃同栈).
+// 改为: 热路径只读缓存不阻塞; TTL 过期时 fire-and-forget 异步重检(永不阻塞主线程).
 let _externalRootOk = false
 let _externalRootTs = 0
 function externalRootAvailable() {
   const now = Date.now()
   if (now - _externalRootTs > 30000) {
+    // 不阻塞: 仅触发异步重检, 本次仍返回旧值
     _externalRootTs = now
-    try { _externalRootOk = fs.existsSync(EXTERNAL_ROOT) } catch (_) { _externalRootOk = false }
+    refreshExternalRoot()
   }
   return _externalRootOk
+}
+async function refreshExternalRoot() {
+  try {
+    await safeFs.access(EXTERNAL_ROOT)
+    _externalRootOk = true
+  } catch (_) { _externalRootOk = false }
+  _externalRootTs = Date.now()
 }
 
 function getPrimaryDownloadRoot() {
@@ -1252,6 +1263,7 @@ module.exports = {
   getPrimaryDownloadRoot,
   setExternalRoot,
   getExternalRoot,
+  refreshExternalRoot,
   normalizeUrl,
   resolveUniqueComicDir,
   resolveComicDir,

@@ -52,7 +52,7 @@ async function startup(deps) {
   await cache.warmup()
   console.log('[Cache] 图片缓存就绪')
 
-  loadDownloadPath(downloadPaths)
+  await warmupExternalRoot(downloadPaths)
 
   // Bug #2 修复: 设置 /local 代理端点允许读取的白名单目录
   // 只允许读取: 所有用户配置的下载根目录(及其所有子目录)、系统缓存目录
@@ -95,14 +95,17 @@ async function startup(deps) {
   })
 }
 
-function loadDownloadPath(downloadPaths) {
+// 异步预热外部盘状态(启动仅一次, 不阻塞主线程扫网络盘)
+async function warmupExternalRoot(downloadPaths) {
   try {
     const settingsPath = path.join(app.getPath('userData'), 'settings.json')
     if (fs.existsSync(settingsPath)) {
       const stored = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-      if (stored.downloadDir && fs.existsSync(stored.downloadDir)) {
+      if (stored.downloadDir) {
         downloadPaths.setExternalRoot(stored.downloadDir)
-        console.log(`[Download] 外部下载目录已加载: ${stored.downloadDir}`)
+        console.log(`[Download] 外部下载目录已登记: ${stored.downloadDir}`)
+        // 异步探测实际可用性(fire-and-forget, 不阻塞启动)
+        downloadPaths.refreshExternalRoot().catch(() => {})
       }
     }
   } catch (e) {

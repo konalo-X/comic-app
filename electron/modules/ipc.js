@@ -273,13 +273,15 @@ function registerAllIPC(deps) {
         try {
           const raw = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf-8'))
           cachedSettings = raw
-          if (raw.downloadDir && fs.existsSync(raw.downloadDir)) {
+          // 注意: 不在此同步 fs.existsSync(downloadDir) 扫外部网络盘(会卡主线程 -> 崩溃).
+          // downloadDir 是用户已知路径, 仅登记到外部根, 实际可用性由 downloadPaths 异步探测.
+          if (raw.downloadDir) {
             setExternalRoot(raw.downloadDir)
           }
           return { ...defaults, ...raw }
         } catch { return defaults }
       }
-      if (stored.downloadDir && fs.existsSync(stored.downloadDir)) {
+      if (stored.downloadDir) {
         setExternalRoot(stored.downloadDir)
       }
       return { ...defaults, ...stored }
@@ -574,17 +576,18 @@ function registerAllIPC(deps) {
   })
 
   // --- 磁盘文件名修复 ---
-  function _safeRename(src, dst) {
+  // 改为异步: 内部 existsSync/renameSync 扫外部网络盘会卡主线程 -> 崩溃. 用 safeFs 异步保活.
+  async function _safeRename(src, dst) {
     if (src === dst) return dst
-    if (!fs.existsSync(src)) return null
+    if (!(await safeFs.exists(src))) return null
     let final = dst
     let i = 1
-    while (fs.existsSync(final)) {
+    while (await safeFs.exists(final)) {
       final = `${dst}-fix${i}`
       i++
     }
     try {
-      fs.renameSync(src, final)
+      await safeFs.rename(src, final)
       return final
     } catch (e) {
       console.warn(`[fixDisk] 重命名失败: ${src} -> ${final}: ${e.message}`)
@@ -631,7 +634,7 @@ function registerAllIPC(deps) {
         let currentComicPath = oldPath
 
         if (dirName !== expectedComicDir) {
-          const renamed = _safeRename(oldPath, expectedComicPath)
+          const renamed = await _safeRename(oldPath, expectedComicPath)
           if (renamed) {
             currentComicPath = renamed
             report.renamedComicDirs.push({
@@ -664,7 +667,7 @@ function registerAllIPC(deps) {
             if (chDirName !== expectedChapterDir) {
               const oldChPath = path.join(currentComicPath, chDirName)
               const newChPath = path.join(currentComicPath, expectedChapterDir)
-              const renamed = _safeRename(oldChPath, newChPath)
+              const renamed = await _safeRename(oldChPath, newChPath)
               if (renamed) {
                 report.renamedChapterDirs.push({
                   comic: matched.title,
