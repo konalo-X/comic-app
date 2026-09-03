@@ -810,7 +810,10 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
   }
 
   const imageConcurrency = 5
-  const imageBuffers = new Map()
+  let downloaded = 0 // [内存优化 2026-09-03] 边下边写盘: 落盘计数实时累加, 不缓存整章 buffer
+  // [内存优化 2026-09-03] 不再把整章图片缓冲进 imageBuffers Map(单章最多 165 图 × 并发 5 章
+  // = GB 级常驻内存, 曾导致 OOM 类致命错误 abort)。改为边下边转码写盘, 内存只保留当前正在
+  // 处理的单张 buffer。
   let downloadQueueIdx = 0
   let completedCount = 0
   let bytesDownloaded = 0
@@ -839,8 +842,19 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
             try { _hostBreakerRecordFailure(new url.URL(imageUrl).hostname) } catch {}
             throw new Error('下载的图片为空(空buffer)')
           }
-          imageBuffers.set(imageIndex, buf)
+          // 边下边转码写盘: 立即落盘, 不缓存整章到内存
+          const outPath = path.join(chDir, `${String(imageIndex + 1).padStart(3, '0')}.webp`)
+          await sharpPool.webpConvert(buf, outPath, { quality: 85 })
+          const actualFormat = await detectFileFormat(outPath)
+          if (actualFormat !== 'webp') {
+            const webpBuf = await sharpPool.webpConvertToBuffer(buf, { quality: 85 })
+            await safeFs.writeFile(outPath, webpBuf)
+          }
           bytesDownloaded += buf.length
+          if (!state.completedIndices.includes(imageIndex)) {
+            state.completedIndices.push(imageIndex)
+          }
+          downloaded++
           success = true
         } catch (e) {
           retries++
@@ -908,66 +922,31 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
   await Promise.all(workers)
 
   if (job.cancelled()) {
-    // 取消时只统计已真正落盘的图片数（fs.existsSync 校验过的）
-    // 未落盘的 buffer 主动丢弃，不计入完成数，避免 DB 记录大于实际磁盘文件数
+    // 取消时已落盘的图片在 imgWorker 里实时记入了 state.completedIndices;
+    // 这里只需统计真正落盘的数量(不依赖内存 buffer)。
     let downloadedOnDisk = 0
-    let pendingInBuffer = 0
-    for (const [idx, buf] of imageBuffers) {
-      if (!buf) continue
+    for (const idx of state.completedIndices) {
       const outPath = path.join(chDir, `${String(idx + 1).padStart(3, '0')}.webp`)
       if (await existsAsync(outPath)) {
-        // 已真正落盘：保留计入完成
         downloadedOnDisk++
-        if (!state.completedIndices.includes(idx)) {
-          state.completedIndices.push(idx)
-        }
       } else {
-        // 未落盘的 buffer 主动丢弃，仅计入 pending
-        pendingInBuffer++
+        // 写入中途异常: 回滚计数
+        state.completedIndices = state.completedIndices.filter(i => i !== idx)
       }
     }
     await saveChapterState(chDir, state)
     return {
       cancelled: true,
       downloaded: downloadedOnDisk,
-      pending: pendingInBuffer,
+      pending: 0,
       total: images.length,
       failedImages: currentFailedImages
     }
   }
 
-  let downloaded = 0
   const writeErrors = []
-  for (const [imageIndex, buf] of imageBuffers) {
-    if (!buf) continue
-    const outPath = path.join(chDir, `${String(imageIndex + 1).padStart(3, '0')}.webp`)
-    try {
-      await sharpPool.webpConvert(buf, outPath, { quality: 85 })
-      const actualFormat = await detectFileFormat(outPath)
-      if (actualFormat !== 'webp') {
-        console.warn(`[下载] 图片格式不正确(${actualFormat})，重新转换: ${outPath}`)
-        const webpBuf = await sharpPool.webpConvertToBuffer(buf, { quality: 85 })
-        await safeFs.writeFile(outPath, webpBuf)
-      }
-      downloaded++
-      if (!state.completedIndices.includes(imageIndex)) {
-        state.completedIndices.push(imageIndex)
-      }
-      state.failedImages = (state.failedImages || []).filter(f => f.index !== imageIndex + 1)
-    } catch (e) {
-      writeErrors.push({ index: imageIndex + 1, error: e.message })
-      try { console.warn(`[下载] 图片转换失败 ${comicTitle} › ${chapterName} 第${imageIndex + 1}页: ${e.message}`) } catch {}
-      // Bug #5 修复: writeErrors 合入 state.failedImages, 同时从 completedIndices 中去掉(防止失败当成功)
-      state.completedIndices = state.completedIndices.filter(i => i !== imageIndex)
-      // 避免 failedImages 里同一 index 重复
-      state.failedImages = (state.failedImages || []).filter(f => f.index !== imageIndex + 1)
-      state.failedImages.push({
-        index: imageIndex + 1,
-        url: (images[imageIndex] && (typeof images[imageIndex] === 'string' ? images[imageIndex] : images[imageIndex].url)) || '',
-        error: `write:${e.message}`
-      })
-    }
-  }
+  // 边下边写盘后, 所有非失败图片已在 imgWorker 内落盘并记入 completedIndices(已计入 downloaded)。
+  // 这里只需把 writeErrors(实际是转码异常)补回 failedImages, 不再遍历内存 buffer。
 
   if (currentFailedImages.length > 0) {
     const existing = new Set((state.failedImages || []).map(f => f.index))
