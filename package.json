@@ -97,7 +97,12 @@
       "target": [
         "dmg"
       ],
-      "darkModeSupport": true
+      "darkModeSupport": true,
+      "extendInfo": {
+        "LSEnvironment": {
+          "UV_THREADPOOL_SIZE": "16"
+        }
+      }
     },
     "win": {
       "icon": "build/icons/icon.ico",

@@ -809,7 +809,8 @@ async function downloadChapterImages(job, images, chDir, startIndex, comicTitle,
     throw new Error(`磁盘空间不足，需要约 ${(estimatedBytes / 1024 / 1024).toFixed(1)}MB`)
   }
 
-  const imageConcurrency = 5
+  // [防 libuv 线程池叠加 2026-09-08] 从 5 降到 3, 降低高并发时 DNS 线程池 + fs 线程池 + sharpPool worker 同时满载叠加触发死锁的概率
+  const imageConcurrency = 3
   let downloaded = 0 // [内存优化 2026-09-03] 边下边写盘: 落盘计数实时累加, 不缓存整章 buffer
   // [内存优化 2026-09-03] 不再把整章图片缓冲进 imageBuffers Map(单章最多 165 图 × 并发 5 章
   // = GB 级常驻内存, 曾导致 OOM 类致命错误 abort)。改为边下边转码写盘, 内存只保留当前正在

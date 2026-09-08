@@ -5,13 +5,11 @@ const dns = require('dns')
 // ============ DNS 预解析 + 缓存 ============
 // 根因: 国内系统 DNS 对 18rouman.vip 等域名解析不稳定(部分子域名 ETIMEOUT 28-49 秒)。
 // 方案 1(main.js 的 DoH)已让 Electron net 的 DNS 走 Google/Cloudflare DoH, 但 DoH 服务器
-// 本身可能不可达(如被墙)。本模块作为补充: 用 Node.js dns.Resolver 直连 8.8.8.8/1.1.1.1,
-// 在下载前预解析域名, 3 秒内不可解析则快速失败, 避免 downloadBuf 的 30 秒超时。
+// 本身可能不可达(如被墙)。本模块作为补充: 用 Node.js dns.Resolver 直连公共 DNS,
+// 在下载前预解析域名, 超时则快速失败, 避免 downloadBuf 的 30 秒超时。
 
 // Bug #35 修复: 之前用 8.8.8.8/1.1.1.1, 在国内被 GFW 污染/超时,
-// prefetch 对 18rouman.vip 子域名返回污染 IP 或失败, 导致 downloadBuf 抛 "DNS 解析失败"
-// 变体回退被跳过。改为国内可靠公共 DNS (阿里 DNS + 腾讯 DNS), 失败时降级为 trust=true
-// (信任系统 DNS, 交给 main.js 配置的 Chromium DoH 处理, 不再 fail fast)。
+// 改为国内可靠公共 DNS (阿里 DNS + 腾讯 DNS), 失败时降级为 trust=true。
 const PUBLIC_DNS_SERVERS = ['223.5.5.5', '119.29.29.29']
 const RESOLVER = new dns.Resolver()
 RESOLVER.setServers(PUBLIC_DNS_SERVERS)
@@ -25,8 +23,29 @@ const CACHE_TTL_FAIL = 60000
 // 缓存: hostname -> { ok: boolean, ips: string[], expireAt: number }
 const _cache = new Map()
 
+// [防 libuv uv_cancel abort 2026-09-08]
+// dns.Resolver.resolve4 走 dns 模块内部线程池(底层也是 libuv)。当请求在途、但 JS 端已不持有
+// Promise 引用(并发 fan-out 后丢弃 / 任务取消)时, V8 GC 会对在途请求调用 uv_cancel,
+// libuv 在请求已提交线程池后 uv_cancel 返回非 0 -> 直接 abort 整个进程
+// (崩溃栈: uv_free_interface_addresses + uv_fs_stat + OnFatalError -> SIGABRT, 与 09-02/09-05 同)。
+// 修复: 把所有在途 DNS Promise 注册进模块级 Set, settle 后才移除, GC 永远碰不到在途请求。
+const _dnsPending = new Set()
+function _guardDns(promise) {
+  _dnsPending.add(promise)
+  promise.then(
+    () => _dnsPending.delete(promise),
+    () => _dnsPending.delete(promise)
+  )
+  return promise
+}
+
+// [DNS 限并发 2026-09-08] 避免下载峰值时 DNS 线程池 + fs 线程池 + sharpPool 同时满载叠加触发死锁。
+const DNS_MAX_CONCURRENCY = 4
+let _dnsRunning = 0
+const _dnsQueue = []
+
 function _resolveWithTimeout(hostname) {
-  return new Promise((resolve) => {
+  return _guardDns(new Promise((resolve) => {
     let settled = false
     const timer = setTimeout(() => {
       if (settled) return
@@ -44,7 +63,24 @@ function _resolveWithTimeout(hostname) {
         resolve(addresses)
       }
     })
+  }))
+}
+
+// 对外: 带限流包装(内部 _resolveWithTimeout 已被 _guardDns 保活)
+function resolveLimited(hostname) {
+  if (_dnsRunning >= DNS_MAX_CONCURRENCY) {
+    return new Promise((resolve) => {
+      _dnsQueue.push(() => resolve(_resolveWithTimeout(hostname)))
+    })
+  }
+  _dnsRunning++
+  const p = _resolveWithTimeout(hostname)
+  p.finally(() => {
+    _dnsRunning--
+    const next = _dnsQueue.shift()
+    if (next) next()
   })
+  return p
 }
 
 /**
@@ -70,12 +106,9 @@ async function prefetch(urlStr) {
     return cached.ok
   }
 
-  // 用公共 DNS 解析
-  const ips = await _resolveWithTimeout(hostname)
+  // 用公共 DNS 解析(限并发 + 保活)
+  const ips = await resolveLimited(hostname)
   const ok = ips !== null && ips.length > 0
-  // Bug #35 修复: 公共 DNS(阿里/腾讯) 失败时, 不再直接判 false 阻断,
-  // 而是降级为 trust=true 信任系统 DNS(让 main.js 配置的 Chromium DoH 处理),
-  // 避免公共 DNS 偶发不可达时把正常的变体 URL 错误地过滤掉。
   _cache.set(hostname, {
     ok,
     ips: ips || [],
@@ -92,14 +125,11 @@ async function prefetch(urlStr) {
  */
 async function filterResolvable(urls) {
   if (!urls || urls.length === 0) return []
-  // 收集所有唯一 hostname
   const hostnames = new Set()
   for (const u of urls) {
     try { hostnames.add(new URL(u).hostname) } catch {}
   }
-  // 并行预解析所有 hostname
   await Promise.all([...hostnames].map(h => prefetch(`https://${h}/`)))
-  // 过滤可解析的 URL
   return urls.filter(u => {
     try {
       const h = new URL(u).hostname
