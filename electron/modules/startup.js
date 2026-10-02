@@ -61,6 +61,13 @@ async function startup(deps) {
     // 所有下载根 (getDownloadRoots 包含默认 downloads 目录 + 用户自定义根)
     const roots = downloadPaths.getDownloadRoots ? downloadPaths.getDownloadRoots() : []
     for (const r of roots) if (r) allowedDirs.add(path.resolve(String(r)))
+    // Bug #52 修复: /local 封面代理白名单
+    // 启动顺序为 warmupExternalRoot(异步探测盘) -> 此处 setAllowedLocalDirs。
+    // 但 externalRootAvailable() 是异步 fire-and-forget, 此时探测尚未返回 _externalRootOk=false,
+    // 导致 getDownloadRoots() 把外部盘排除, 白名单缺 /Volumes/可移动磁盘 -> 全部本地封面被代理拒绝(返回占位SVG)。
+    // 这里无条件把已登记的 EXTERNAL_ROOT 加入白名单(代理每请求会校验文件存在, 盘没挂则返回404让前端回退在线封面, 安全)。
+    const extRoot = downloadPaths.getExternalRoot ? downloadPaths.getExternalRoot() : null
+    if (extRoot) allowedDirs.add(path.resolve(String(extRoot)))
     // 缓存目录 (CACHE_ROOT 可能是 app.getPath('userData') + '/cache')
     const cacheDir = path.resolve(cache.CACHE_ROOT || path.join(app.getPath('userData'), 'cache'))
     allowedDirs.add(cacheDir)
