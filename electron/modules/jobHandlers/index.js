@@ -150,6 +150,14 @@ async function scanAndEnqueueFinishedEpub() {
   const { sanitizeFilename: sanitize } = require('../../utils')
   let existing = new Set()
   try { const fs2 = require('fs'); if (fs2.existsSync(outDir)) { for (const f of fs2.readdirSync(outDir)) { if (f.toLowerCase().endsWith('.epub')) existing.add(f) } } } catch (_) {}
+  // 一次性查出队列里所有 exportEpub 任务的 sourceUrl(不限 500, 避免超量重复入队)
+  const queuedUrls = new Set()
+  try {
+    const rows2 = db.getRawDB().prepare("SELECT payload FROM job_queue WHERE type='exportEpub' AND status IN ('waiting','active')").all()
+    for (const r of rows2) {
+      try { const pl = JSON.parse(r.payload); if (pl.sourceUrl) queuedUrls.add(pl.sourceUrl) } catch (_) {}
+    }
+  } catch (_) {}
   // 本轮已入队的 sourceUrl(避免同一次扫描内重复 add, 因为 listJobs 不反映本次循环刚加的)
   const seenThisScan = new Set()
   for (const comic of comics) {
@@ -158,11 +166,9 @@ async function scanAndEnqueueFinishedEpub() {
     if (!(await isComicFullyDownloaded(comic))) continue
     const epubName = sanitize(comic.title) + '.epub'
     if (existing.has(epubName)) { seenThisScan.add(comic.sourceUrl); continue }
-    // 跳过已在队列的(单例) + 本轮已入队的
+    // 跳过已在队列的 + 本轮已入队的(用 DB 直接查, 不限 listJobs 500 上限, 避免超量时重复入队)
     if (seenThisScan.has(comic.sourceUrl)) continue
-    const active = jobQueue.listJobs('active', 500).filter(j => j.type === 'exportEpub' && j.payload?.sourceUrl === comic.sourceUrl)
-    const waiting = jobQueue.listJobs('waiting', 500).filter(j => j.type === 'exportEpub' && j.payload?.sourceUrl === comic.sourceUrl)
-    if (active.length || waiting.length) { seenThisScan.add(comic.sourceUrl); continue }
+    if (queuedUrls.has(comic.sourceUrl)) { seenThisScan.add(comic.sourceUrl); continue }
     jobQueue.add('exportEpub', {
       sourceUrl: comic.sourceUrl,
       comicTitle: comic.title,
