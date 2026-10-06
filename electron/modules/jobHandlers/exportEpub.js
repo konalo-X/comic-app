@@ -24,7 +24,8 @@ function loadExportSettings() {
     const p = path.join(app.getPath('userData'), 'settings.json')
     if (fs.existsSync(p)) {
       const s = JSON.parse(fs.readFileSync(p, 'utf8'))
-      return s.epubAutoExport || {}
+      // 返回顶层 settings(epubAutoExportDir / epubAutoExportEnabled 等均为顶层键)
+      return s || {}
     }
   } catch (_) {}
   return {}
