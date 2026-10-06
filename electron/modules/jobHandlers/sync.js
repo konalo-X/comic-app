@@ -73,7 +73,8 @@ async function jobHandlerSync(job, onProgress) {
         if (result.newChapterCount) newChapters += result.newChapterCount
 
         // 自动下载补齐逻辑（胶水代码，保留在 handler）
-        if (comic.favorited && result.detail && result.detail.chapters) {
+        // [2026-10-06] 已导出 EPUB 的漫画不再自动下载(原图可能已删, epub_exported 标记保证不重拉)
+        if (comic.favorited && result.detail && result.detail.chapters && !comic.epubExported) {
           await _triggerAutoDownload(comic, result.detail, job)
         }
 

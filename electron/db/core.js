@@ -303,7 +303,8 @@ function rowToComic(row, opts = {}) {
     updateDelta: row.update_delta || 0,
     favorited: !!row.favorited,
     createdAt: row.createdAt,
-    updatedAt: row.updatedAt
+    updatedAt: row.updatedAt,
+    epubExported: !!row.epub_exported
   }
   // 默认不检查 epub（避免列表查询时逐本扫描磁盘），需要时显式传 checkEpub: true
   if (opts.checkEpub) {

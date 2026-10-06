@@ -457,6 +457,13 @@ async function updateComic(id, changes = {}) {
   return true
 }
 
+async function setEpubExported(comicId, value = 1) {
+  const db = ensureDb()
+  if (!comicId) return false
+  db.prepare('UPDATE comics SET epub_exported = ? WHERE id = ? OR sourceUrl = ?').run(value ? 1 : 0, comicId, comicId)
+  return true
+}
+
 async function setFavorite(comicId, favorited) {
   const db = ensureDb()
   db.prepare('UPDATE comics SET favorited = ? WHERE id = ? OR sourceUrl = ?').run(favorited ? 1 : 0, comicId, comicId)
@@ -549,5 +556,6 @@ module.exports = {
   getAllCategories, getCategoryStats,
   updateComic, setFavorite, clearUpdateDelta, resetUpdateDelta,
   getFavoritedComics,
+  setEpubExported,
   searchComics, advancedSearch
 }

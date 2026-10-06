@@ -204,6 +204,14 @@
             <input v-model="settings.epubAutoExportDir" type="text" class="form-input" placeholder="默认 ~/Downloads" />
           </div>
           <div class="form-group">
+            <label class="form-label">生成 EPUB 后删除原图</label>
+            <label class="switch">
+              <input v-model="settings.epubAutoDeleteImages" type="checkbox" />
+              <span class="slider"></span>
+            </label>
+            <span class="text-sub" style="font-size: 11px; margin-left: 8px;">EPUB 含全部图片后可安全删除原档，且不会重新下载</span>
+          </div>
+          <div class="form-group">
             <button class="btn btn-secondary btn-sm" :disabled="enqueueing" @click="enqueueFinishedEpub">
               {{ enqueueing ? '扫描中...' : '立即导出已完结漫画' }}
             </button>
@@ -250,7 +258,8 @@ export default {
         epubImageQuality: 'original',
         epubIncludeMeta: true,
         epubAutoExportEnabled: false,
-        epubAutoExportDir: ''
+        epubAutoExportDir: '',
+        epubAutoDeleteImages: false
       },
       saving: false,
       enqueueing: false,

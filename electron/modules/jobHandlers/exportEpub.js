@@ -118,6 +118,30 @@ async function jobHandlerExportEpub(job, onProgress) {
   const result = await exporter.toEPUB(opts)
   const files = Array.isArray(result) ? result : [result]
   console.log(`[AutoEpub] 完成 ${comicTitle}: ${files.map(f => f.outputPath).join(', ')}`)
+
+  // 标记已导出 EPUB (sync/repair 据此跳过, 不再重新下载)
+  if (comic._id || sourceUrl) {
+    try { await db.setEpubExported(comic._id || sourceUrl, 1) } catch (e) { console.warn('[AutoEpub] 标记 epub_exported 失败:', e.message) }
+  }
+
+  // 生成成功后自动删除原图(设置 epubAutoDeleteImages=true 时)
+  // A 方案: EPUB 已含全部图片, 原图可删, 且 epub_exported 标记保证不会重下
+  if (st.epubAutoDeleteImages === true && root && root !== outDir && (await safeFs.access(root).then(() => true).catch(() => false))) {
+    try {
+      const entries = await safeFs.readdir(root)
+      // 只删图片文件(.webp/.jpg/.jpeg/.png), 保留目录结构以便后续导出可重新扫描
+      const imgExt = /\.(webp|jpe?g|png)$/i
+      let delCount = 0
+      for (const e of entries) {
+        if (imgExt.test(e)) {
+          const fp = path.join(root, e)
+          try { await safeFs.unlink(fp); delCount++ } catch (_) {}
+        }
+      }
+      if (delCount > 0) console.log(`[AutoEpub] 已删除原图 ${delCount} 张: ${comicTitle}`)
+    } catch (e) { console.warn('[AutoEpub] 删除原图失败:', e.message) }
+  }
+
   return { success: true, files: files.map(f => f.outputPath), outputPath: files[0]?.outputPath }
 }
 

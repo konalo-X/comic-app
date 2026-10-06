@@ -189,6 +189,19 @@ const migrations = [
       db.exec('DROP INDEX IF EXISTS idx_downloads_comic_chapter')
       db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_downloads_comic_chapter ON download_records(comic_id, chapter_index)')
     }
+  },
+
+  {
+    version: 7,
+    name: 'epub_exported_flag',
+    up(db) {
+      // 标记漫画已成功导出 EPUB, 用于跳过自动下载/修复(原图可删, 不重新拉回)
+      const cols = db.pragma('table_info(comics)')
+      const names = new Set(cols.map(c => c.name))
+      if (!names.has('epub_exported')) {
+        db.exec('ALTER TABLE comics ADD COLUMN epub_exported INTEGER DEFAULT 0')
+      }
+    }
   }
 ]
 

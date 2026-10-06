@@ -24,6 +24,8 @@ async function autoRepairDownloadedComics() {
     for (const comic of comics) {
       if (!comic.local_path) continue
       if (!comic.sourceUrl) continue
+      // [2026-10-06] 已导出 EPUB 的漫画不修复(原图可能已删, epub_exported 标记保证不重拉)
+      if (comic.epubExported) continue
 
       const comicDir = comic.local_path
       if (!(await existsAsync(comicDir))) continue
@@ -62,6 +64,11 @@ async function jobHandlerRepairComic(job, onProgress) {
 
   const comic = await db.getComicByUrl(sourceUrl)
   if (!comic) throw new Error(`未找到漫画: ${sourceUrl}`)
+  // [2026-10-06] 已导出 EPUB 的漫画不修复(原图可能已删)
+  if (comic.epubExported) {
+    console.log(`[修复] ${comicTitle} 已导出 EPUB, 跳过修复`)
+    return { success: true, skipped: true, reason: 'epub_exported' }
+  }
 
   const comicDir = payloadComicDir || comic.local_path || await findComicDir(comic.title, sourceUrl)
   if (!comicDir || !(await existsAsync(comicDir))) {
