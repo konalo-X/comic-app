@@ -87,7 +87,8 @@ contextBridge.exposeInMainWorld('exportApi', {
   fromDownload: (opts) => ipcRenderer.invoke('export:fromDownload', opts),
   listDownloads: () => ipcRenderer.invoke('export:listDownloads'),
   getDownloadChapters: (title) => ipcRenderer.invoke('export:getDownloadChapters', title),
-  checkEpubExists: (title) => ipcRenderer.invoke('export:checkEpubExists', title)
+  checkEpubExists: (title) => ipcRenderer.invoke('export:checkEpubExists', title),
+  enqueueFinishedEpub: () => ipcRenderer.invoke('export:enqueueFinishedEpub')
 })
 
 // ============ 工具函数 API ============

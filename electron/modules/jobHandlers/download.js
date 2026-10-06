@@ -7,7 +7,7 @@ const sharpPool = require('../sharpPool')
 const { app } = require('electron')
 const sources = require('../../sources/registry')
 const db = require('../../db')
-const { sanitizeFilename: sanitize } = require('../../utils')
+const { sanitizeFilename: sanitize, sleep } = require('../../utils')
 const {
   resolveComicDir, getPrimaryDownloadRoot,
   findChapterDir, getValidChapterImages, getValidChapterImagesCached, listChapterImages,
@@ -79,11 +79,34 @@ async function downloadChapterCore(job, comicDir, chapter, chapterIndex, comicTi
     const hint = isConnErr ? '（源站不可达或网络异常）' : ''
     throw new Error(`获取章节页面列表失败 (${comicTitle} › 第${chapterIndex + 1}章 ${chapter.name || ''}): ${cause}${hint}`)
   }
-  const images = Array.isArray(pageList) ? pageList : pageList.images
-  const chapterName = Array.isArray(pageList) ? '' : (pageList.chapterName || '')
+  const _normImages = (pl) => Array.isArray(pl) ? pl : (pl && pl.images)
+  let images = _normImages(pageList)
   if (!images || !images.length) {
     throw new Error(`章节无图片数据 (${comicTitle} › 第${chapterIndex + 1}章 ${chapter.name || ''})`)
   }
+  // [防污染 2026-10-03] 波动墙可能截断章节页, 解析图数骤降被当成"完整章节",
+  // 会污染 chapters.image_count 并让下游 sync/repair 误判已补齐。
+  // 解析图数远低于历史值时整章重试抓章节页(最多 2 次); 仍不够则保留历史值不写低值。
+  try {
+    const historical = await db.getChapterImageCountBySourceUrl(sourceUrl, chapterIndex)
+    if (historical > 0 && images.length > 0 && images.length < historical * 0.5) {
+      console.warn(`[下载] 第${chapterIndex + 1}章 解析图数 ${images.length} 远低于历史 ${historical}, 疑似波动墙截断, 重试解析章节页`)
+      for (let _r = 0; _r < 2; _r++) {
+        if (job.cancelled()) break
+        await sleep(1500 + Math.random() * 1500)
+        try {
+          const _pl2 = await src.getPageList(chapter.url, referer || sourceUrl)
+          const _imgs2 = _normImages(_pl2)
+          if (_imgs2 && _imgs2.length >= historical * 0.5) {
+            images = _imgs2
+            console.log(`[下载] 第${chapterIndex + 1}章 重试解析成功: ${images.length} 张`)
+            break
+          }
+        } catch (_e) { console.warn(`[下载] 第${chapterIndex + 1}章 重试解析失败: ${_e.message}`) }
+      }
+    }
+  } catch (_e) { console.warn(`[下载] 历史图数比对失败: ${_e.message}`) }
+  const chapterName = Array.isArray(pageList) ? '' : (pageList.chapterName || '')
 
   const folder = sanitize(`${chapterIndex + 1}-${chapterName}`)
   const chDir = path.join(comicDir, folder)
@@ -130,8 +153,14 @@ async function saveChapterResult(chapterIndex, chapterName, comicTitle, sourceUr
   if (sourceUrl) {
     // 图数列(image_count)应存源站应有数(total), 不能用实际落盘数覆盖,
     // 否则部分失败会把权威图数污染, 永久掩盖缺图。
+    // [防污染 2026-10-03] 不完整的章节(波动墙截断)图数不可信, 不回写 image_count,
+    // 否则会用低值(如6)覆盖历史真值(如142), 永久掩盖缺图。保留较大的历史值。
     if (expected > 0) {
-      try { await db.updateChapterImageCountBySourceUrl(sourceUrl, chapterIndex, expected) } catch (e) { console.warn(`[下载] updateChapterImageCount 失败: ${e.message}`) }
+      try {
+        const _hist = await db.getChapterImageCountBySourceUrl(sourceUrl, chapterIndex).catch(() => 0)
+        const _trusted = (_hist > 0 && expected < _hist * 0.5) ? _hist : expected
+        await db.updateChapterImageCountBySourceUrl(sourceUrl, chapterIndex, _trusted)
+      } catch (e) { console.warn(`[下载] updateChapterImageCount 失败: ${e.message}`) }
     }
     try { await db.updateComic(sourceUrl, { local_path: path.dirname(chDir) }) } catch (e) { console.warn(`[下载] updateComic local_path 失败: ${e.message}`) }
     // 规则：下载到本地的漫画默认为已收藏，纳入自动追更池

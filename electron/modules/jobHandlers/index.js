@@ -18,6 +18,7 @@ const { jobHandlerCrawlAll } = require('./crawl')
 const { jobHandlerAutoEnrich, jobHandlerEnrichImageCounts } = require('./enrich')
 const { jobHandlerDownloadChapter, jobHandlerDownloadComic } = require('./download')
 const { jobHandlerRepairComic, autoRepairDownloadedComics } = require('./repair')
+const { jobHandlerExportEpub } = require('./exportEpub')
 const {
   JOB_QUEUE, TYPE_CONCURRENCY, AUTO_RETRY, RATE_LIMITS,
   MUTEX_GROUPS, SINGLETON_TYPES
@@ -47,7 +48,8 @@ function initJobQueue() {
       crawlAll: TYPE_CONCURRENCY.crawlAll,
       autoEnrich: TYPE_CONCURRENCY.autoEnrich,
       enrichChapters: TYPE_CONCURRENCY.enrichChapters,
-      repairComic: TYPE_CONCURRENCY.repairComic
+      repairComic: TYPE_CONCURRENCY.repairComic,
+      exportEpub: TYPE_CONCURRENCY.exportEpub
     },
     singletonTypes: SINGLETON_TYPES,
     autoRetryConfig: AUTO_RETRY
@@ -59,6 +61,7 @@ function initJobQueue() {
   jobQueue.register('downloadComic', jobHandlerDownloadComic)
   jobQueue.register('repairComic', jobHandlerRepairComic)
   jobQueue.register('enrichChapters', jobHandlerEnrichImageCounts)
+  jobQueue.register('exportEpub', jobHandlerExportEpub)
   jobQueue.registerMutexGroup('crawl', MUTEX_GROUPS.crawl)
   jobQueue.registerMutexGroup('enrich', MUTEX_GROUPS.enrich)
   jobQueue.rateLimits = RATE_LIMITS
@@ -94,6 +97,21 @@ function initJobQueue() {
     }
     // autoEnrich 已合并到 sync 任务中，不再自动续排
     // sync 每 15 分钟运行一次，覆盖所有缺字段漫画的补全
+    // [自动导出EPUB 2026-10-06] sync 完成(无论有无更新)后, 扫描已完结且全本下完的漫画, 自动入队导出 EPUB
+    if (data.type === 'sync' && data.result && !data.result.cancelled) {
+      if (_autoEpubTimer) clearTimeout(_autoEpubTimer)
+      _autoEpubTimer = setTimeout(() => {
+        _autoEpubTimer = null
+        if (_autoTasksStopped) return
+        if (shouldSkipAutoTask()) {
+          console.log('[AutoEpub] 系统空闲不足, 跳过自动导出扫描')
+          return
+        }
+        scanAndEnqueueFinishedEpub().catch(e => {
+          console.warn('[AutoEpub] 自动导出扫描失败:', e.message)
+        })
+      }, 6 * 60 * 1000)
+    }
   })
   jobQueue.on('failed', (data) => notifyQueueChanged('failed', data))
   jobQueue.on('paused', (data) => notifyQueueChanged('paused', data))
@@ -107,6 +125,54 @@ function initJobQueue() {
 
 let _autoTasksStarted = false
 let _autoRepairTimer = null
+let _autoEpubTimer = null
+
+// [自动导出EPUB 2026-10-06] 扫描已完结 + 本地全本下载完成 + 尚无 EPUB 的漫画, 入队 exportEpub 任务
+// 入队逻辑与 autoRepair 一致(单例防重、跳过已在队列的), 持久化到 job_queue 可重启续跑
+async function scanAndEnqueueFinishedEpub() {
+  const jobQueue = getJobQueue()
+  if (!jobQueue) { console.log('[AutoEpub] jobQueue 为空, 返回'); return }
+  let st = {}
+  try {
+    const sp = path.join(app.getPath('userData'), 'settings.json')
+    if (fs.existsSync(sp)) st = JSON.parse(fs.readFileSync(sp, 'utf-8')) || {}
+  } catch (_) {}
+  if (st.epubAutoExportEnabled === false) {
+    console.log('[AutoEpub] 自动导出未开启, 跳过扫描')
+    return
+  }
+  const { isComicFullyDownloaded } = require('./exportEpub')
+  const rows = await db.getComics({ page: 1, pageSize: 100000, localOnly: true }).catch(() => null)
+  const comics = (rows && (rows.docs || rows.data)) || rows || []
+  let enqueued = 0
+  // 已存在 EPUB 的路径判断(直接扫输出目录, 无需新增 db 方法)
+  const outDir = (st.epubAutoExportDir && st.epubAutoExportDir.trim()) || app.getPath('downloads')
+  const { sanitizeFilename: sanitize } = require('../../utils')
+  let existing = new Set()
+  try { const fs2 = require('fs'); if (fs2.existsSync(outDir)) { for (const f of fs2.readdirSync(outDir)) { if (f.toLowerCase().endsWith('.epub')) existing.add(f) } } } catch (_) {}
+  // 本轮已入队的 sourceUrl(避免同一次扫描内重复 add, 因为 listJobs 不反映本次循环刚加的)
+  const seenThisScan = new Set()
+  for (const comic of comics) {
+    if (!comic.local_path || !comic.sourceUrl) continue
+    if (!/已完结/.test(comic.status || '')) continue
+    if (!(await isComicFullyDownloaded(comic))) continue
+    const epubName = sanitize(comic.title) + '.epub'
+    if (existing.has(epubName)) { seenThisScan.add(comic.sourceUrl); continue }
+    // 跳过已在队列的(单例) + 本轮已入队的
+    if (seenThisScan.has(comic.sourceUrl)) continue
+    const active = jobQueue.listJobs('active', 500).filter(j => j.type === 'exportEpub' && j.payload?.sourceUrl === comic.sourceUrl)
+    const waiting = jobQueue.listJobs('waiting', 500).filter(j => j.type === 'exportEpub' && j.payload?.sourceUrl === comic.sourceUrl)
+    if (active.length || waiting.length) { seenThisScan.add(comic.sourceUrl); continue }
+    jobQueue.add('exportEpub', {
+      sourceUrl: comic.sourceUrl,
+      comicTitle: comic.title,
+      comicDir: comic.local_path
+    }, { priority: 6, source: 'auto' })
+    enqueued++
+  }
+  if (enqueued > 0) console.log(`[AutoEpub] 已为 ${enqueued} 部已完结漫画创建 EPUB 导出任务`)
+  else console.log('[AutoEpub] 无新漫画需要导出 EPUB')
+}
 let _autoTasksStopped = false
 
 function startAutoTasks() {
@@ -241,6 +307,14 @@ function startAutoTasks() {
   }, IDLE_CHECK_INTERVAL)
   autoTimers.push(idleCheckTimer)
 
+  // [自动导出EPUB 2026-10-06] 启动后 30 秒无条件扫描一次已完结全本漫画，
+  // 入队 exportEpub（首启扫描，之后由 sync 完成回调的 _autoEpubTimer 续扫）。
+  // 这样即使启动后长时间无 sync 更新，已完结漫画也会逐步被打包成 EPUB。
+  autoTimers.push(setTimeout(() => {
+    if (_autoTasksStopped) return
+    scanAndEnqueueFinishedEpub().catch(e => console.warn('[AutoEpub] 首启扫描失败:', e.message))
+  }, 30 * 1000))
+
   setAutoTimers(autoTimers)
 
   console.log(`[Auto] 持久队列自动任务已启动（同步间隔 ${syncIntervalHours}h，已合并字段补全）`)
@@ -251,6 +325,8 @@ function stopAutoTasks() {
   _autoTasksStopped = true
   // Bug #17 修复: 清理 initJobQueue 中注册的 5min autoRepair 定时器
   if (_autoRepairTimer) { clearTimeout(_autoRepairTimer); _autoRepairTimer = null }
+  // [自动导出EPUB 2026-10-06] 清理 autoExport 定时器
+  if (_autoEpubTimer) { clearTimeout(_autoEpubTimer); _autoEpubTimer = null }
   const autoTimers = getAutoTimers()
   for (const t of autoTimers) {
     clearTimeout(t)

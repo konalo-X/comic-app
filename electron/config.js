@@ -46,7 +46,8 @@ module.exports = {
     crawlAll: 1,
     autoEnrich: 1,
     enrichChapters: 1,
-    repairComic: 1
+    repairComic: 1,
+    exportEpub: 1
   },
 
   // ========== 自动重试配置 ==========

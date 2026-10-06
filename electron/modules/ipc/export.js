@@ -8,7 +8,7 @@ const { sanitizeFilename: sanitize } = require('../../utils')
 function register(deps) {
   const {
     app, ipcMain,
-    exporter, downloadPaths
+    exporter, downloadPaths, getJobQueue
   } = deps
 
   const { findComicDir, getPrimaryDownloadRoot, getDownloadRoots } = downloadPaths
@@ -132,6 +132,16 @@ function register(deps) {
   ipcMain.handle('export:checkEpubExists', async (_, comicTitle) => {
     const outputPath = path.join(app.getPath('downloads'), `${sanitize(comicTitle)}.epub`)
     return fs.existsSync(outputPath)
+  })
+
+  // [自动导出EPUB 2026-10-06] 手动触发: 扫描已完结且全本下完的漫画, 批量入队 exportEpub
+  ipcMain.handle('export:enqueueFinishedEpub', async () => {
+    const jobQueue = getJobQueue && getJobQueue()
+    if (!jobQueue) return { success: false, error: 'JobQueue 未初始化' }
+    // 动态加载扫描函数(避免循环依赖)
+    const { scanAndEnqueueFinishedEpub } = require('./jobHandlers/index')
+    await scanAndEnqueueFinishedEpub()
+    return { success: true }
   })
 
   ipcMain.handle('export:getDownloadChapters', async (_, comicTitle) => {

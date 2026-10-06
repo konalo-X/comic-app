@@ -77,6 +77,17 @@ async function jobHandlerRepairComic(job, onProgress) {
   const chapters = comic.chapters || []
   if (!chapters.length) throw new Error('漫画无章节信息')
 
+  // [兜底补齐 2026-10-03] 波动墙下 repair 实时抓章节页也会拿到残缺图数(如6), 误判"健康"。
+  // 用本漫画各章 image_count 的中位数当"应有图数基线": 某章明显低于基线(如 6 vs 同本~150) 就判残缺,
+  // 即使 repair 实时抓取撞墙, 也能用同本基线发现缺图并触发重抓。
+  const _counts = chapters.map(c => c.image_count || 0).filter(n => n > 0).sort((a, b) => a - b)
+  const _median = _counts.length ? _counts[Math.floor(_counts.length / 2)] : 0
+  const _expectedFor = (idx) => {
+    const hist = chapters[idx] && chapters[idx].image_count ? chapters[idx].image_count : 0
+    if (hist > 0) return hist
+    return _median > 0 ? _median : 0
+  }
+
   const chapterOnlineCounts = []
   if (deepCheck) {
     console.log(`[修复] 深度检查模式: 逐章获取在线图片数 ${comic.title}`)
@@ -118,6 +129,18 @@ async function jobHandlerRepairComic(job, onProgress) {
   }
 
   const problemChapters = health.chapters.filter(ch => !ch.healthy)
+  // [兜底补齐 2026-10-03] 用同本中位数补判: 实时抓取撞墙导致 onlineCount 缺失时,
+  // 本地图数远低于同本基线也判为残缺, 触发重抓。
+  if (_median > 0) {
+    for (const ch of health.chapters) {
+      if (ch.healthy) continue
+      if (ch.onlineCount && ch.onlineCount > 0) continue
+      const exp = _expectedFor(ch.chapterIndex)
+      if (exp > 0 && ch.validCount > 0 && ch.validCount < exp * 0.5) {
+        if (!problemChapters.includes(ch)) problemChapters.push(ch)
+      }
+    }
+  }
   console.log(`[修复] ${comic.title} 发现 ${problemChapters.length} 个问题章节`)
 
   for (let pi = 0; pi < problemChapters.length; pi++) {

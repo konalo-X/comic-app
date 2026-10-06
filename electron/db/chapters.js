@@ -162,7 +162,21 @@ module.exports = {
   isChapterNameGeneric, getComicsWithGenericChapterNames,
   getComicsNeedingChapterNameEnrichment,
   updateChapterName, updateChapterNames, markComicChaptersEnriched,
-  reconcileImageCounts
+  reconcileImageCounts,
+  getChapterCount, getDownloadedChapterCount
+}
+
+// [自动导出EPUB 2026-10-06] 判定"全本下载完成"用:
+// 章节总数 vs 已成功下载的章数(按 chapter_index 去重).
+async function getChapterCount(comicId) {
+  try { const db = ensureDb(); const row = db.prepare('SELECT COUNT(*) AS c FROM chapters WHERE comic_id = ?').get(comicId); return (row && row.c) || 0 } catch (_) { return 0 }
+}
+async function getDownloadedChapterCount(comicId) {
+  try {
+    const db = ensureDb()
+    const row = db.prepare("SELECT COUNT(DISTINCT chapter_index) AS c FROM download_records WHERE comic_id = ? AND status = 'success'").get(comicId)
+    return (row && row.c) || 0
+  } catch (_) { return 0 }
 }
 
 // ============ Bug 修复 (2026-08-17): image_count 以磁盘为准回填 ============

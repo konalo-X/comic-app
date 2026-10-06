@@ -191,6 +191,24 @@
               <span class="slider"></span>
             </label>
           </div>
+          <hr class="divider" />
+          <div class="form-group form-group-row">
+            <label class="form-label">已完结漫画自动导出 EPUB</label>
+            <label class="switch">
+              <input v-model="settings.epubAutoExportEnabled" type="checkbox" />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label class="form-label">自动导出目录（留空=下载目录）</label>
+            <input v-model="settings.epubAutoExportDir" type="text" class="form-input" placeholder="默认 ~/Downloads" />
+          </div>
+          <div class="form-group">
+            <button class="btn btn-secondary btn-sm" :disabled="enqueueing" @click="enqueueFinishedEpub">
+              {{ enqueueing ? '扫描中...' : '立即导出已完结漫画' }}
+            </button>
+            <span class="text-sub" style="font-size: 11px; margin-left: 8px;">扫描已完结且全本下载完成的漫画，逐本打包 EPUB</span>
+          </div>
         </div>
       </div>
 
@@ -230,9 +248,12 @@ export default {
         epubVolumeMode: 'auto',
         epubChaptersPerVolume: 100,
         epubImageQuality: 'original',
-        epubIncludeMeta: true
+        epubIncludeMeta: true,
+        epubAutoExportEnabled: false,
+        epubAutoExportDir: ''
       },
       saving: false,
+      enqueueing: false,
       appVersion: '1.0.0',
       newScanPath: '',
       testScanResult: null
@@ -281,6 +302,22 @@ export default {
         alert('保存设置失败: ' + error.message)
       } finally {
         this.saving = false
+      }
+    },
+    async enqueueFinishedEpub() {
+      if (this.enqueueing) return
+      this.enqueueing = true
+      try {
+        const r = await window.offlineApi?.enqueueFinishedEpub?.()
+        if (r?.success) {
+          alert('已扫描并入队，EPUB 将在后台逐本生成')
+        } else {
+          alert('触发失败: ' + (r?.error || '未知错误'))
+        }
+      } catch (e) {
+        alert('触发失败: ' + e.message)
+      } finally {
+        this.enqueueing = false
       }
     },
     addScanPath() {
